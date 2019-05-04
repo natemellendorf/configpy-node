@@ -1,6 +1,7 @@
 # ConfigPy-Node
-## Built off of:
-[JunosPyEz-OSSH-Server](https://pypi.org/project/junospyez-ossh-server/)
+### Author:
+Nate Mellendorf
+nate.mellendorf@gmail.com
 
 ## Overview:
 This project builds off of the JunosPyEZ OpenSSH Server.
@@ -17,6 +18,9 @@ The device will attempt to connect again, and the cycle continues.
 The server listens on TCP port 9000.
 If a Redis server is provided when the container starts, it will push status updates to it.
 These updates are leveraged by the ConfigPy Hub interface, when the ConfigPy container is launched to point at the same Redis server.
+
+### Built off of:
+[JunosPyEz-OSSH-Server](https://pypi.org/project/junospyez-ossh-server/)
 
 ### Commands:
 Update or omit the network as needed
