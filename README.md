@@ -15,12 +15,12 @@ After the config is pushed, it will perform a commit check to confirm the change
 Finally, the server will disconnect the SSH session.
 The device will attempt to connect again, and the cycle continues.
 
-### Additional details
+#### Additional details
 The server listens on TCP port 9000.
 If a Redis server is provided when the container starts, it will push status updates to it.
 These updates are leveraged by the ConfigPy Hub interface, when the ConfigPy container is launched to point at the same Redis server.
 
-### Built off of:
+#### Credit to:
 [JunosPyEz-OSSH-Server](https://pypi.org/project/junospyez-ossh-server/)
 
 ### Commands:
