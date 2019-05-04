@@ -1,5 +1,5 @@
-# configpy-node
-##Built off of:
+# ConfigPy-Node
+## Built off of:
 [JunosPyEz-OSSH-Server](https://pypi.org/project/junospyez-ossh-server/)
 
 ## Overview:
