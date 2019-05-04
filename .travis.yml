@@ -1,0 +1,9 @@
+language: python
+
+services:
+  - docker
+
+before_install:
+- docker pull natemellendorf/configpy-node
+- docker run --name configpy-node -d -p 9000:9000 --network production configpy-node --rm natemellendorf/configpy-node test1 SecRet 127.0.0.1
+- docker ps -a
