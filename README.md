@@ -1,7 +1,6 @@
 # ConfigPy-Node
 ### Author:
-Nate Mellendorf
-nate.mellendorf@gmail.com
+Nate Mellendorf - nate.mellendorf@gmail.com
 
 ## Overview:
 This project builds off of the JunosPyEZ OpenSSH Server.
