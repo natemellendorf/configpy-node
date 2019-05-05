@@ -1,5 +1,4 @@
 # ConfigPy-Node
-[![Build Status](https://travis-ci.com/natemellendorf/configpy-node.svg?branch=master)](https://travis-ci.com/natemellendorf/configpy-node)
 
 ### Author:
 Nate Mellendorf <br>
