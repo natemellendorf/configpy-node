@@ -21,8 +21,7 @@ def start(**kwargs):
 
 
 if __name__ == '__main__':
-    # Temp logic to be improved.
-    print(argv)
+    # FIXME - Need to find a better way to handle args...
     if len(argv) == 6:
         try:
             start(login_user=argv[1], login_password=argv[2], redis_url=argv[3], repo_uri=argv[4], repo_auth_token=argv[5])

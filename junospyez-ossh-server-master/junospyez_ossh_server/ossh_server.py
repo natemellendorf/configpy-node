@@ -16,6 +16,7 @@ from datetime import datetime
 import socket
 import json
 import warnings
+from lxml import etree
 
 
 warnings.filterwarnings(action='ignore', module='.*paramiko.*')
@@ -49,42 +50,56 @@ def repo_sync(**kwargs):
 
     querystring = {"per_page": "100"}
 
-    r = requests.get(findall, headers=headers, params=querystring)
-    returned = r.json()
+    try:
+        r = requests.get(findall, headers=headers, params=querystring)
+        returned = r.json()
+    except Exception as e:
+        logger.error(str(e))
+        return
 
     for x in returned:
         try:
             if x['path_with_namespace'] in kwargs["repo_uri"]:
                 raw_config_file = f'{findall}/{x["id"]}/repository/files/{kwargs["cid"]}%2F{kwargs["serial_number"]}%2Eset/raw?ref=master'
-                try:
-                    r = requests.get(raw_config_file, headers=headers, timeout=5)
-                except Exception as e:
-                    logger.error(str(e))
-                return r.text
+                r = requests.get(raw_config_file, headers=headers, timeout=5)
+                if r.status_code == 200:
+                    return r.text
+                # If status code is not 200, then something's broken.
+                return False
+
         except Exception as e:
             logger.error(str(e))
-            return
+            return False
+
 
 def update_config(device, facts, r, repo_uri, repo_auth_token):
 
-    config_file_location = f'configs/{facts["device_sn"]}.set'
+    # FIXME - This whole function should be reviewed and cleaned up.
+
+    # Attempt to find the config file for the connected device
+    logger.info(f'Searching {repo_uri} in directory {facts["cid"]} for {facts["device_sn"]}.set')
+    conf_file = repo_sync(repo_uri=repo_uri, cid=facts['cid'], serial_number=facts['device_sn'],
+                       repo_auth_token=repo_auth_token)
+    '''
+    WIP:
     try:
-        conf_file = repo_sync(repo_uri=repo_uri, cid='00', serial_number=facts['device_sn'],
-                           repo_auth_token=repo_auth_token)
-        '''
-        try:
-            new_file, filename = tempfile.mkstemp()
+        new_file, filename = tempfile.mkstemp()
 
-            print(filename)
-        except Exception as e:
-            logger.error(str(e))
-        '''
+        print(filename)
+    except Exception as e:
+        logger.error(str(e))
+    '''
 
+    # FIXME - This is not ideal, and should be modified so the config is never written to the local storage.
+
+    # If found, save the file so it can be loaded by PyEz.
+    config_file_location = f'configs/{facts["device_sn"]}.set'
+    if conf_file:
         with open(config_file_location, "w") as file:
             file.write(conf_file)
-
-    except Exception as e:
-        print(str(e))
+    else:
+        logger.error('Unable to access remote repo')
+        return
 
     device.bind(cu=Config)
     device.timeout = 300
@@ -256,6 +271,14 @@ def gather_basic_facts(device):
     else:
         basic_facts['hostname'] = 'no_hostname'
     basic_facts['config'] = 'compliant'
+
+    # FIXME - Likely a better way to handle this error if contact is not found.
+    # Get SNMP contact ID:
+    try:
+        config = device.rpc.get_config(filter_xml='snmp', options={'format':'json'})
+        basic_facts['cid'] = config['configuration']['snmp']['contact']
+    except Exception as e:
+        basic_facts['cid'] = 'staging'
 
     # -------------------------------------------------------------------------------
     # need to do a route lookup using the outbound ssh config to determine the actual
@@ -511,9 +534,8 @@ class OutboundSSHServer(object):
 
             ########################################
 
-            logger.info('Checking config for {0}...'.format(facts['device_sn']))
             update_config(dev, facts, self.r, self.repo_uri, self.repo_auth_token)
-            logger.info('Config check complete.')
+            logger.info('Config audit complete.')
 
             # call user on-device callback
             # self.on_device(dev, facts)
