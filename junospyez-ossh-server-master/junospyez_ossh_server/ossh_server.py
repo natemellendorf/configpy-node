@@ -8,27 +8,84 @@ from jnpr.junos.exception import ConfigLoadError
 from jnpr.junos.exception import CommitError
 from junospyez_ossh_server.log import logger
 import redis
-
+import requests
+from pprint import pprint
+import os
+import tempfile
 from datetime import datetime
-
 import socket
 import json
 import warnings
 
-warnings.filterwarnings(action='ignore', module='.*paramiko.*')
 
+warnings.filterwarnings(action='ignore', module='.*paramiko.*')
 __all__ = ['OutboundSSHServer']
 
+
 def convert(data):
+
     json_data = json.dumps(data)
     result = json.loads(json_data)
     return result
 
-def update_config(device, facts, r):
 
-    config_dict = {}
+def repo_sync(**kwargs):
 
-    conf_file = f"configs/{facts['device_sn']}.set"
+    words = kwargs["repo_uri"].split("/")
+    protocol = words[0]
+    domain = words[2]
+    gitlab_url = '{0}//{1}'.format(protocol, domain)
+    findall = '{0}/api/v4/projects/'.format(gitlab_url)
+
+    headers = {
+        'PRIVATE-TOKEN': "{0}".format(kwargs['repo_auth_token']),
+        'Content-Type': "application/json",
+        'User-Agent': "ConfigPy-Node",
+        'Accept': "*/*",
+        'Cache-Control': "no-cache",
+        'Connection': "keep-alive",
+        'cache-control': "no-cache"
+    }
+
+    querystring = {"per_page": "100"}
+
+    r = requests.get(findall, headers=headers, params=querystring)
+    returned = r.json()
+
+    for x in returned:
+        try:
+            if x['path_with_namespace'] in kwargs["repo_uri"]:
+                raw_config_file = f'{findall}/{x["id"]}/repository/files/{kwargs["cid"]}%2F{kwargs["serial_number"]}%2Eset/raw?ref=master'
+                try:
+                    r = requests.get(raw_config_file, headers=headers, timeout=5)
+                except Exception as e:
+                    logger.error(str(e))
+                return r.text
+        except Exception as e:
+            logger.error(str(e))
+            return
+
+def update_config(device, facts, r, repo_uri, repo_auth_token):
+
+    config_file_location = f'configs/{facts["device_sn"]}.set'
+    try:
+        conf_file = repo_sync(repo_uri=repo_uri, cid='00', serial_number=facts['device_sn'],
+                           repo_auth_token=repo_auth_token)
+        '''
+        try:
+            new_file, filename = tempfile.mkstemp()
+
+            print(filename)
+        except Exception as e:
+            logger.error(str(e))
+        '''
+
+        with open(config_file_location, "w") as file:
+            file.write(conf_file)
+
+    except Exception as e:
+        print(str(e))
+
     device.bind(cu=Config)
     device.timeout = 300
 
@@ -42,91 +99,116 @@ def update_config(device, facts, r):
         return
     
     logger.info("Loading configuration changes")
-    try:
-        device.cu.load(path=conf_file, merge=True, ignore_warning='statement not found')
-    except (ConfigLoadError, Exception) as err:
-        logger.info("Unable to load configuration changes: {0}".format(err))
-        logger.info("Unlocking the configuration")
-        try:
-            device.cu.unlock()
-        except UnlockError:
-            logger.info("Unable to unlock configuration: {0}".format(err))
-        device.close()
-        return
 
-    show_compare = device.cu.diff(rb_id=0)
-
-    if show_compare is None:
-        logger.info('*** No changes needed...')
-        try:
-            r.hmset(facts['device_sn'], {'config': 'compliant'})
-        except Exception as e:
-            logger.info(e)
-
-    else:
-        logger.info('Changes found:')
-        try:
-            r.hmset(facts['device_sn'], {'config': 'non-compliant'})
-            r.hmset(facts['device_sn'], {'last change': show_compare})
-        except Exception as e:
-            logger.info(e)
-        logger.info(show_compare)
-        logger.info('Updating config...')
+    # Check to see if config file exists.
+    # It should, but we'll check anyway.
+    if os.path.exists(config_file_location):
 
         try:
-            logger.info('Running commit check...')
-            try:
-                r.hmset(facts['device_sn'], {'config': 'running commit check'})
-            except Exception as e:
-                logger.info(e)
-
-            if device.cu.commit_check() is True:
-                try:
-                    r.hmset(facts['device_sn'], {'config': 'commit check passed'})
-                    r.hmset(facts['device_sn'], {'config': 'running commit confirmed'})
-                except Exception as e:
-                    logger.info(e)
-                logger.info('Commit check passed.')
-                logger.info('running commit confirmed')
-
-
-                try:
-                    commit = device.cu.commit(comment='Loaded by DSC.', confirm=2, timeout=240)
-
-                    if commit:
-                        logger.info('Commit complete.')
-                        logger.info('Confirming changes...')
-                        try:
-                            r.hmset(facts['device_sn'], {'config': 'confirm commit'})
-                        except Exception as e:
-                            logger.info(e)
-
-                        if device.cu.commit_check():
-                            try:
-                                r.hmset(facts['device_sn'], {'config': 'config updated'})
-                                logger.info('Commit confirmed.')
-                            except Exception as e:
-                                logger.info(e)
-
-                except Exception as e:
-                    logger.info(f'{e}')
-                    r.hmset(facts['device_sn'], {'config': 'device lost'})
-                    return
-            else:
-                r.hmset(facts['device_sn'], {'config': 'commit check failed'})
-                logger.info('Commit check failed...')
-                device.cu.unlock()
-
-        except CommitError as err:
-            logger.info("Unable to commit configuration: {0}".format(err))
+            device.cu.load(path=config_file_location, merge=True, ignore_warning='statement not found')
+        except (ConfigLoadError, Exception) as err:
+            logger.info("Unable to load configuration changes: {0}".format(err))
             logger.info("Unlocking the configuration")
             try:
                 device.cu.unlock()
-            except UnlockError as err:
+            except UnlockError:
                 logger.info("Unable to unlock configuration: {0}".format(err))
+            try:
+                os.remove(config_file_location)
+            except Exception as e:
+                logger.error(f'Unable to delete {config_file_location}')
+                logger.error(str(e))
 
             device.close()
             return
+
+        show_compare = device.cu.diff(rb_id=0)
+
+        if show_compare is None:
+            logger.info('*** No changes needed...')
+            try:
+                r.hmset(facts['device_sn'], {'config': 'compliant'})
+            except Exception as e:
+                logger.info(e)
+
+        else:
+            logger.info('Changes found:')
+            try:
+                r.hmset(facts['device_sn'], {'config': 'non-compliant'})
+                r.hmset(facts['device_sn'], {'last change': show_compare})
+            except Exception as e:
+                logger.info(e)
+            logger.info(show_compare)
+            logger.info('Updating config...')
+
+            try:
+                logger.info('Running commit check...')
+                try:
+                    r.hmset(facts['device_sn'], {'config': 'running commit check'})
+                except Exception as e:
+                    logger.info(e)
+
+                if device.cu.commit_check() is True:
+                    try:
+                        r.hmset(facts['device_sn'], {'config': 'commit check passed'})
+                        r.hmset(facts['device_sn'], {'config': 'running commit confirmed'})
+                    except Exception as e:
+                        logger.info(e)
+                    logger.info('Commit check passed.')
+                    logger.info('running commit confirmed')
+
+
+                    try:
+                        commit = device.cu.commit(comment='Loaded by DSC.', confirm=2, timeout=240)
+
+                        if commit:
+                            logger.info('Commit complete.')
+                            logger.info('Confirming changes...')
+                            try:
+                                r.hmset(facts['device_sn'], {'config': 'confirm commit'})
+                            except Exception as e:
+                                logger.info(e)
+
+                            if device.cu.commit_check():
+                                try:
+                                    r.hmset(facts['device_sn'], {'config': 'config updated'})
+                                    logger.info('Commit confirmed.')
+                                except Exception as e:
+                                    logger.info(e)
+
+                    except Exception as e:
+                        logger.info(str(e))
+                        r.hmset(facts['device_sn'], {'config': 'device lost'})
+                        return
+                else:
+                    r.hmset(facts['device_sn'], {'config': 'commit check failed'})
+                    logger.info('Commit check failed...')
+                    device.cu.unlock()
+                    try:
+                        os.remove(config_file_location)
+                    except Exception as e:
+                        logger.error(f'Unable to delete {config_file_location}')
+                        logger.error(str(e))
+
+            except CommitError as err:
+                logger.info("Unable to commit configuration: {0}".format(err))
+                logger.info("Unlocking the configuration")
+                try:
+                    device.cu.unlock()
+                except UnlockError as err:
+                    logger.info("Unable to unlock configuration: {0}".format(err))
+
+                try:
+                    os.remove(config_file_location)
+                except Exception as e:
+                    logger.error(f'Unable to delete {config_file_location}')
+                    logger.error(str(e))
+
+                device.close()
+                return
+
+    else:
+        logger.info(f'Config was not found for {facts["device_sn"]}')
 
     logger.info("Unlocking the configuration")
     try:
@@ -134,6 +216,13 @@ def update_config(device, facts, r):
     except UnlockError as err:
         logger.info("Unable to unlock configuration: {0}".format(err))
         device.close()
+    logger.info("Removing local config file")
+    try:
+        os.remove(config_file_location)
+        logger.info("Config removed.")
+    except Exception as e:
+        logger.error(f'Unable to delete {config_file_location}')
+        logger.error(str(e))
 
     # device.close()
     
@@ -160,9 +249,12 @@ def gather_basic_facts(device):
 
     basic_facts = dict()
     basic_facts['os_version'] = device.facts['version']
-    basic_facts['hostname'] = device.facts['hostname']
     basic_facts['device_sn'] = device.facts['serialnumber']
     basic_facts['device_model'] = device.facts['model']
+    if device.facts['hostname']:
+        basic_facts['hostname'] = device.facts['hostname']
+    else:
+        basic_facts['hostname'] = 'no_hostname'
     basic_facts['config'] = 'compliant'
 
     # -------------------------------------------------------------------------------
@@ -210,7 +302,7 @@ class OutboundSSHServer(object):
     DEFAULT_LISTEN_BACKLOG = 10
     logger = logger
 
-    def __init__(self, ipaddr, port, login_user, login_password, redis_url, on_device=None, on_error=None):
+    def __init__(self, ipaddr, port, login_user, login_password, redis_url, repo_uri, repo_auth_token, on_device=None, on_error=None, unittest=None):
         """
         Parameters
         ----------
@@ -252,6 +344,8 @@ class OutboundSSHServer(object):
         self.login_user = login_user
         self.login_password = login_password
         self.redis_url = redis_url
+        self.repo_uri = repo_uri
+        self.repo_auth_token = repo_auth_token
         self.bind_ipaddr = ipaddr
         self.bind_port = int(port)
         self.listen_backlog = OutboundSSHServer.DEFAULT_LISTEN_BACKLOG
@@ -262,6 +356,7 @@ class OutboundSSHServer(object):
         self.on_error = on_error        # callable also provided at :meth:`start`
 
         self.r = redis.Redis(host=redis_url, port=6379, db=0)
+
 
     # ----------------------------------------------------------------------------------------------------------------
     # PROPERTIES
@@ -417,7 +512,7 @@ class OutboundSSHServer(object):
             ########################################
 
             logger.info('Checking config for {0}...'.format(facts['device_sn']))
-            update_config(dev, facts, self.r)
+            update_config(dev, facts, self.r, self.repo_uri, self.repo_auth_token)
             logger.info('Config check complete.')
 
             # call user on-device callback
