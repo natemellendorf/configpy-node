@@ -31,7 +31,7 @@ Update the REDIS_URI with the IP address or Docker container name for your Redis
 docker run --name configpy-node \
 -d -p 9000:9000 \
 --network production \
---rm natemellendorf/configpy-node USERNAME PASSWORD REDIS_URI
+--rm natemellendorf/configpy-node USERNAME PASSWORD REDIS_URI GITLAB_REPO_URL GITLAB_AUTH_TOKEN
 ```
 
 
@@ -50,7 +50,7 @@ docker run --name redis \
 docker run --name configpy-node \
 -d -p 9000:9000 \
 --network production \
---rm natemellendorf/configpy-node nate P@ssw0rd redis
+--rm natemellendorf/configpy-node nate P@ssw0rd redis gitlab/networking/configs 9vPeLLiuu_URTF_pHoNB
 ```
 Your Redis and ConfigPy-Node containers would now be connected.
 You could confirm this by looking at the logs of the ConfigPy-Node container.
@@ -71,6 +71,7 @@ Remember to permit this traffic inbound on your mgmt interface.
 set system services outbound-ssh client test device-id test-srx
 set system services outbound-ssh client test services netconf
 set system services outbound-ssh client test <DockerHost> port 9000
+set snmp contact 00
 ```
 
 ### Review logs from configpy-node:
