@@ -30,7 +30,7 @@ def convert(data):
     return result
 
 
-def repo_sync(**kwargs):
+def repo_sync(redis, **kwargs):
 
     words = kwargs["repo_uri"].split("/")
     protocol = words[0]
@@ -53,23 +53,27 @@ def repo_sync(**kwargs):
     try:
         r = requests.get(findall, headers=headers, params=querystring)
         returned = r.json()
+
     except Exception as e:
         logger.error(str(e))
+        redis.hmset(kwargs["device_sn"], {'config': 'repo error'})
+        redis.hmset(kwargs["device_sn"], {'repo_error': f'{str(e)}'})
         return
 
     for x in returned:
-        try:
-            if x['path_with_namespace'] in kwargs["repo_uri"]:
-                raw_config_file = f'{findall}/{x["id"]}/repository/files/{kwargs["cid"]}%2F{kwargs["serial_number"]}%2Eset/raw?ref=master'
-                r = requests.get(raw_config_file, headers=headers, timeout=5)
-                if r.status_code == 200:
-                    return r.text
-                # If status code is not 200, then something's broken.
-                return False
-
-        except Exception as e:
-            logger.error(str(e))
-            return False
+        if x['path_with_namespace'] in kwargs["repo_uri"]:
+            raw_config_file = f'{findall}/{x["id"]}/repository/files/{kwargs["cid"]}%2F{kwargs["device_sn"]}%2Eset/raw?ref=master'
+            try:
+                returned = requests.get(raw_config_file, headers=headers, timeout=5)
+                if returned.status_code == 200:
+                    return returned
+                else:
+                    raise Exception(f'{returned.text}')
+            except Exception as e:
+                logger.error(str(e))
+                redis.hmset(kwargs["device_sn"], {'config': 'repo error'})
+                redis.hmset(kwargs["device_sn"], {'repo_error': f'{str(e)}'})
+                return
 
 
 def update_config(device, facts, r, repo_uri, repo_auth_token):
@@ -78,8 +82,10 @@ def update_config(device, facts, r, repo_uri, repo_auth_token):
 
     # Attempt to find the config file for the connected device
     logger.info(f'Searching {repo_uri} in directory {facts["cid"]} for {facts["device_sn"]}.set')
-    conf_file = repo_sync(repo_uri=repo_uri, cid=facts['cid'], serial_number=facts['device_sn'],
+
+    conf_file = repo_sync(r, repo_uri=repo_uri, cid=facts['cid'], device_sn=facts['device_sn'],
                        repo_auth_token=repo_auth_token)
+
     '''
     WIP:
     try:
@@ -94,30 +100,40 @@ def update_config(device, facts, r, repo_uri, repo_auth_token):
 
     # If found, save the file so it can be loaded by PyEz.
     config_file_location = f'configs/{facts["device_sn"]}.set'
-    if conf_file:
-        with open(config_file_location, "w") as file:
-            file.write(conf_file)
-    else:
-        logger.error('Unable to access remote repo')
-        return
 
-    device.bind(cu=Config)
-    device.timeout = 300
-
-    # Lock the configuration, load configuration changes, and commit
-    logger.info("Locking the configuration")
     try:
-        device.cu.lock()
-    except LockError as err:
-        logger.info("Unable to lock configuration: {0}".format(err))
-        device.close()
+        if conf_file:
+            print('Writing to file')
+            with open(config_file_location, "w") as file:
+                file.write(conf_file.text)
+    except AttributeError:
+        logger.error('Unable to access remote repo')
+        r.hmset(facts['device_sn'], {'config': 'repo error'})
         return
-    
-    logger.info("Loading configuration changes")
+    except Exception as e:
+        logger.error('Unable to access remote repo')
+        r.hmset(facts['device_sn'], {'config': 'repo error'})
+        logger.error('default exception.')
+        logger.error(str(e))
+        return
 
     # Check to see if config file exists.
     # It should, but we'll check anyway.
     if os.path.exists(config_file_location):
+
+        device.bind(cu=Config)
+        device.timeout = 300
+
+        # Lock the configuration, load configuration changes, and commit
+        logger.info("Locking the configuration")
+        try:
+            device.cu.lock()
+        except LockError as err:
+            logger.info("Unable to lock configuration: {0}".format(err))
+            device.close()
+            return
+
+        logger.info("Loading configuration changes")
 
         try:
             device.cu.load(path=config_file_location, merge=True, ignore_warning='statement not found')
@@ -222,29 +238,32 @@ def update_config(device, facts, r, repo_uri, repo_auth_token):
                 device.close()
                 return
 
+        logger.info("Unlocking the configuration")
+        try:
+            device.cu.unlock()
+        except UnlockError as err:
+            logger.info("Unable to unlock configuration: {0}".format(err))
+            device.close()
+        logger.info("Removing local config file")
+
+        try:
+            os.remove(config_file_location)
+            logger.info("Config removed.")
+        except Exception as e:
+            logger.error(f'Unable to delete {config_file_location}')
+            logger.error(str(e))
+
     else:
         logger.info(f'Config was not found for {facts["device_sn"]}')
-
-    logger.info("Unlocking the configuration")
-    try:
-        device.cu.unlock()
-    except UnlockError as err:
-        logger.info("Unable to unlock configuration: {0}".format(err))
-        device.close()
-    logger.info("Removing local config file")
-    try:
-        os.remove(config_file_location)
-        logger.info("Config removed.")
-    except Exception as e:
-        logger.error(f'Unable to delete {config_file_location}')
-        logger.error(str(e))
+        r.hmset(facts['device_sn'], {'configpy-node_error': 'Could not locate config in configs/'})
+        r.hmset(facts['device_sn'], {'config': 'repo error'})
 
     # device.close()
     
     return
     
 
-def gather_basic_facts(device):
+def gather_basic_facts(device, r):
     """
     Using the provide Junos Device object, retrieve basic facts about the device.
 
@@ -275,10 +294,44 @@ def gather_basic_facts(device):
     # FIXME - Likely a better way to handle this error if contact is not found.
     # Get SNMP contact ID:
     try:
+        # Look for SNMP contact in config.
         config = device.rpc.get_config(filter_xml='snmp', options={'format':'json'})
         basic_facts['cid'] = config['configuration']['snmp']['contact']
+
+    except IndexError:
+        # Index error is for if the SNMP contact is not defined in the config.
+        try:
+            '''
+            # Lets see if ConfigPy set a bootstrap SNMP client ID in the Redis DB.
+            # This would happen when someone generates a config with ConfigPy.
+            # and then they push it to the GitLab repo.
+            # when pushed, the config is assigned to a client contact ID (folder) in GitLab.
+            # If a bootstrap ID is detected in the Redis DB, then we'll copy it to the Redis CID value.
+            # So in a way, I think of this as a sort of bootstrap.
+            # Without this, we have no way to find the config file for a new (out of box) device.
+            '''
+
+            # Get redis keys for this device
+            redis_info = r.hgetall(device.facts['serialnumber'])
+            # Get the bootstrap_cid, if one exists. Else, hit the KeyError exception.
+            bootstrap = redis_info[b'bootstrap_cid'].decode("utf-8")
+            # If it's found, let's make that the new cid value.
+            if bootstrap:
+                basic_facts['cid'] = str(bootstrap)
+                logger.info('Bootstrap detected!')
+                basic_facts['config'] = 'bootstrap!'
+            else:
+                # Shouldn't be used, but just in case.
+                basic_facts['cid'] = 'none'
+        except KeyError:
+            # bootstrap_cid isn't a valid key, so no bootstrap.
+            logger.info('no bootstrap')
+            basic_facts['cid'] = 'none'
     except Exception as e:
-        basic_facts['cid'] = 'staging'
+        # Catch anything else here...
+        # Shouldn't be hit.
+        print(str(e))
+
 
     # -------------------------------------------------------------------------------
     # need to do a route lookup using the outbound ssh config to determine the actual
@@ -516,7 +569,7 @@ class OutboundSSHServer(object):
 
         try:
             logger.info(f"gathering basic facts from device via: {via_str}")
-            facts = gather_basic_facts(dev)
+            facts = gather_basic_facts(dev, self.r)
             logger.info(json.dumps(facts, indent=3))
 
             current_time = str(datetime.now().time())
