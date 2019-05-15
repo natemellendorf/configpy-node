@@ -51,7 +51,8 @@ def repo_sync(redis, **kwargs):
     querystring = {"per_page": "100"}
 
     try:
-        r = requests.get(findall, headers=headers, params=querystring)
+        logger.info('Reaching out to gather repo information...')
+        r = requests.get(findall, headers=headers, params=querystring, timeout=5)
         returned = r.json()
 
     except Exception as e:
@@ -64,6 +65,7 @@ def repo_sync(redis, **kwargs):
         if x['path_with_namespace'] in kwargs["repo_uri"]:
             raw_config_file = f'{findall}/{x["id"]}/repository/files/{kwargs["cid"]}%2F{kwargs["device_sn"]}%2Eset/raw?ref=master'
             try:
+                logger.info('Grabbing device config from repo...')
                 returned = requests.get(raw_config_file, headers=headers, timeout=5)
                 if returned.status_code == 200:
                     return returned
@@ -202,7 +204,7 @@ def update_config(device, facts, r, repo_uri, repo_auth_token):
 
                             if device.cu.commit_check():
                                 try:
-                                    r.hmset(facts['device_sn'], {'config': 'config updated'})
+                                    r.hmset(facts['device_sn'], {'config': 'compliant'})
                                     logger.info('Commit confirmed.')
                                 except Exception as e:
                                     logger.info(e)
@@ -313,19 +315,18 @@ def gather_basic_facts(device, r):
 
             # Get redis keys for this device
             redis_info = r.hgetall(device.facts['serialnumber'])
-            # Get the bootstrap_cid, if one exists. Else, hit the KeyError exception.
-            bootstrap = redis_info[b'bootstrap_cid'].decode("utf-8")
+            # Get the ztp, if one exists. Else, hit the KeyError exception.
+            ztp = redis_info[b'ztp'].decode("utf-8")
             # If it's found, let's make that the new cid value.
-            if bootstrap:
-                basic_facts['cid'] = str(bootstrap)
-                logger.info('Bootstrap detected!')
-                basic_facts['config'] = 'bootstrap!'
+            if ztp:
+                basic_facts['cid'] = str(ztp)
+                logger.info('found ZTP flag!')
+                logger.info(f'setting CID value to {str(ztp)}')
             else:
                 # Shouldn't be used, but just in case.
                 basic_facts['cid'] = 'none'
         except KeyError:
-            # bootstrap_cid isn't a valid key, so no bootstrap.
-            logger.info('no bootstrap')
+            # ztp isn't a valid key, so no ztp.
             basic_facts['cid'] = 'none'
     except Exception as e:
         # Catch anything else here...
