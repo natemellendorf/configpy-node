@@ -53,7 +53,12 @@ def repo_sync(redis, **kwargs):
     try:
         logger.info('Reaching out to gather repo information...')
         r = requests.get(findall, headers=headers, params=querystring, timeout=5)
-        returned = r.json()
+
+        if r.status_code == 200:
+            returned = r.json()
+        else:
+            logger.info('Unable to access repo.')
+            raise Exception(f'{r.text}')
 
     except Exception as e:
         logger.error(str(e))
