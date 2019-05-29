@@ -331,6 +331,7 @@ def gather_basic_facts(device, r):
     except Exception as e:
         # Catch anything else here...
         # Shouldn't be hit.
+        basic_facts['cid'] = 'none'
         print(str(e))
 
 
