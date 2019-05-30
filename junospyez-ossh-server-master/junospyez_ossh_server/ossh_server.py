@@ -289,17 +289,16 @@ def gather_basic_facts(device, r):
     #basic_facts['device_model'] = device.facts['model']
     
     if device.facts['model'] is None:
-        basic_facts['device_model'] = 'none'
-        print(basic_facts['device_model'])
+        basic_facts['device_model'] = 'cluster?'
+        logger.info('No model? possible cluster')
     else:
         basic_facts['device_model'] = device.facts['model']
-        print(basic_facts['device_model'])
     
-    if device.facts['hostname']:
-        basic_facts['hostname'] = device.facts['hostname']
-    
+    if device.facts['hostname'] is None:
         basic_facts['hostname'] = 'no_hostname'
-    basic_facts['config'] = 'compliant'
+        logger.info('No hostname')
+    else:
+        basic_facts['hostname'] = device.facts['hostname']
 
     # FIXME - Likely a better way to handle this error if contact is not found.
     # Get SNMP contact ID:
