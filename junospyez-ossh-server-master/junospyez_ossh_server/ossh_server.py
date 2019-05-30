@@ -287,6 +287,12 @@ def gather_basic_facts(device, r):
     basic_facts['os_version'] = device.facts['version']
     basic_facts['device_sn'] = device.facts['serialnumber']
     basic_facts['device_model'] = device.facts['model']
+    
+    if device.facts['model']:
+        basic_facts['model'] = device.facts['model']
+    else:
+        basic_facts['model'] = 'none'
+    
     if device.facts['hostname']:
         basic_facts['hostname'] = device.facts['hostname']
     else:
