@@ -286,16 +286,18 @@ def gather_basic_facts(device, r):
     basic_facts = dict()
     basic_facts['os_version'] = device.facts['version']
     basic_facts['device_sn'] = device.facts['serialnumber']
-    basic_facts['device_model'] = device.facts['model']
+    #basic_facts['device_model'] = device.facts['model']
     
-    if device.facts['model']:
-        basic_facts['model'] = device.facts['model']
+    if device.facts['model'] is None:
+        basic_facts['device_model'] = 'none'
+        print(basic_facts['device_model'])
     else:
-        basic_facts['model'] = 'none'
+        basic_facts['device_model'] = device.facts['model']
+        print(basic_facts['device_model'])
     
     if device.facts['hostname']:
         basic_facts['hostname'] = device.facts['hostname']
-    else:
+    
         basic_facts['hostname'] = 'no_hostname'
     basic_facts['config'] = 'compliant'
 
