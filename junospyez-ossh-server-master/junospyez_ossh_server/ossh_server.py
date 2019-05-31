@@ -286,11 +286,10 @@ def gather_basic_facts(device, r):
     basic_facts = dict()
     basic_facts['os_version'] = device.facts['version']
     basic_facts['device_sn'] = device.facts['serialnumber']
-    #basic_facts['device_model'] = device.facts['model']
     
     if device.facts['model'] is None:
         basic_facts['device_model'] = 'cluster?'
-        logger.info('No model? possible cluster')
+        logger.info('No model - possible cluster')
     else:
         basic_facts['device_model'] = device.facts['model']
     
@@ -306,8 +305,10 @@ def gather_basic_facts(device, r):
         # Look for SNMP contact in config.
         config = device.rpc.get_config(filter_xml='snmp', options={'format':'json'})
         basic_facts['cid'] = config['configuration']['snmp']['contact']
+        logger.info('A CID was found in the device config')
 
     except IndexError:
+        logger.info('No CID found in the device config')
         # Index error is for if the SNMP contact is not defined in the config.
         try:
             '''
@@ -331,15 +332,18 @@ def gather_basic_facts(device, r):
                 logger.info(f'setting CID value to {str(ztp)}')
             else:
                 # Shouldn't be used, but just in case.
+                logger.info('No ZTP flag set in redis')
                 basic_facts['cid'] = 'none'
         except KeyError:
             # ztp isn't a valid key, so no ztp.
+            logger.info('Exception..setting CID to none.')
             basic_facts['cid'] = 'none'
     except Exception as e:
         # Catch anything else here...
         # Shouldn't be hit.
         basic_facts['cid'] = 'none'
-        print(str(e))
+        logger.info('Error when searching for CID')
+        logger.info('ZTP not checked')
 
 
     # -------------------------------------------------------------------------------
