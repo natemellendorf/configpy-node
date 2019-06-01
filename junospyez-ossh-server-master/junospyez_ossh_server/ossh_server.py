@@ -344,6 +344,7 @@ def gather_basic_facts(device, r):
         basic_facts['cid'] = 'none'
         logger.info('Error when searching for CID')
         logger.info('ZTP not checked')
+        logger.info('Error: {0}'.format(e))
 
 
     # -------------------------------------------------------------------------------
