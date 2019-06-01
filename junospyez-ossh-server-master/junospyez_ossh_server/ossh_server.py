@@ -304,6 +304,8 @@ def gather_basic_facts(device, r):
     try:
         # Look for SNMP contact in config.
         logger.info('Attempting to find SNMP in config..')
+        config = device.rpc.get_config(filter_xml='snmp', options={'format':'json'})
+        logger.info('Config found...')
         logger.info(config['configuration'])
         logger.info(device.rpc.get_config(filter_xml='snmp', options={'format':'json'}))
         config = device.rpc.get_config(filter_xml='snmp', options={'format':'json'})
