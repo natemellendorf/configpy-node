@@ -304,6 +304,8 @@ def gather_basic_facts(device, r):
     try:
         # Look for SNMP contact in config.
         config = device.rpc.get_config(filter_xml='snmp', options={'format':'json'})
+        logger.info(config)
+        logger.info(config['configuration']['snmp']['contact'])
         basic_facts['cid'] = config['configuration']['snmp']['contact']
         logger.info('A CID was found in the device config')
 
