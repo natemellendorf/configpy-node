@@ -292,16 +292,17 @@ def gather_basic_facts(device, r):
     else:
         basic_facts['hostname'] = device.facts['hostname']
     
-    # SRX cluster check
+    # Gather device specific faqs
     if device.facts['srx_cluster']:
         logger.info('Device: SRX Cluster!')
         basic_facts['srx_cluster'] = 'True'
         basic_facts['os_version'] = device.facts['version_RE0']
         basic_facts['device_model'] = device.facts['model_info']['node0']
+    else:
+        # Gather general faqs
+        basic_facts['os_version'] = device.facts['version']
+        basic_facts['device_model'] = device.facts['model']
     
-    # Gather general faqs
-    basic_facts['os_version'] = device.facts['version']
-    basic_facts['device_model'] = device.facts['model']
     
     # FIXME - Likely a better way to handle this error if contact is not found.
     # Get SNMP contact ID:
