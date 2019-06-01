@@ -284,21 +284,25 @@ def gather_basic_facts(device, r):
     # -----------------------------------------------------
 
     basic_facts = dict()
-    basic_facts['os_version'] = device.facts['version']
     basic_facts['device_sn'] = device.facts['serialnumber']
-    
-    if device.facts['model'] is None:
-        basic_facts['device_model'] = 'cluster?'
-        logger.info('No model - possible cluster')
-    else:
-        basic_facts['device_model'] = device.facts['model']
     
     if device.facts['hostname'] is None:
         basic_facts['hostname'] = 'no_hostname'
         logger.info('No hostname')
     else:
         basic_facts['hostname'] = device.facts['hostname']
-
+    
+    # SRX cluster check
+    if device.facts['srx_cluster']:
+        logger.info('Device: SRX Cluster!')
+        basic_facts['srx_cluster'] = 'True'
+        basic_facts['os_version'] = device.facts['version_RE0']
+        basic_facts['device_model'] = device.facts['model_info']['node0']
+    
+    # Gather general faqs
+    basic_facts['os_version'] = device.facts['version']
+    basic_facts['device_model'] = device.facts['model']
+    
     # FIXME - Likely a better way to handle this error if contact is not found.
     # Get SNMP contact ID:
     try:
@@ -306,10 +310,8 @@ def gather_basic_facts(device, r):
         logger.info('Attempting to find SNMP in config..')
         config = device.rpc.get_config(filter_xml='snmp', options={'format':'json'})
         logger.info('Config found...')
-        logger.info(config['configuration'])
-        logger.info(device.rpc.get_config(filter_xml='snmp', options={'format':'json'}))
-        config = device.rpc.get_config(filter_xml='snmp', options={'format':'json'})
-        logger.info(config)
+        test = config['configuration']
+        logger.info(test)
         logger.info(config['configuration']['snmp']['contact'])
         basic_facts['cid'] = config['configuration']['snmp']['contact']
         logger.info('A CID was found in the device config')
