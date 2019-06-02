@@ -17,6 +17,7 @@ import socket
 import json
 import warnings
 from lxml import etree
+import xmltodict
 
 
 warnings.filterwarnings(action='ignore', module='.*paramiko.*')
@@ -289,23 +290,43 @@ def gather_basic_facts(device, r):
     # -----------------------------------------------------
 
     basic_facts = dict()
-    basic_facts['os_version'] = device.facts['version']
     basic_facts['device_sn'] = device.facts['serialnumber']
-    basic_facts['device_model'] = device.facts['model']
-    if device.facts['hostname']:
-        basic_facts['hostname'] = device.facts['hostname']
-    else:
+    
+    if device.facts['hostname'] is None:
         basic_facts['hostname'] = 'no_hostname'
-    basic_facts['config'] = 'compliant'
-
+        logger.info('No hostname')
+    else:
+        basic_facts['hostname'] = device.facts['hostname']
+    
+    # Gather device specific faqs
+    if device.facts['srx_cluster']:
+        logger.info('Device: SRX Cluster!')
+        basic_facts['srx_cluster'] = 'True'
+        basic_facts['os_version'] = device.facts['version_RE0']
+        basic_facts['device_model'] = device.facts['model_info']['node0']
+    else:
+        # Gather general faqs
+        basic_facts['os_version'] = device.facts['version']
+        basic_facts['device_model'] = device.facts['model']
+    
+    
     # FIXME - Likely a better way to handle this error if contact is not found.
     # Get SNMP contact ID:
     try:
         # Look for SNMP contact in config.
-        config = device.rpc.get_config(filter_xml='snmp', options={'format':'json'})
-        basic_facts['cid'] = config['configuration']['snmp']['contact']
+        logger.info('Attempting to find SNMP in config..')
+        snmp_config = device.rpc.get_config(filter_xml='snmp/contact')
+        found_snmp_value = etree.tostring(snmp_config, encoding='unicode')
+        parsed_snmp_value = xmltodict.parse(found_snmp_value)
+        #pprint(parsed_snmp_value['configuration']['snmp']['contact'])
+        #config = device.rpc.get_config(filter_xml='snmp', options={'format':'json'})
+        logger.info(parsed_snmp_value['configuration']['snmp']['contact'])
+        basic_facts['cid'] = parsed_snmp_value['configuration']['snmp']['contact']
+        logger.info('CID saved to redis db')
 
-    except IndexError:
+    except Exception as e:
+        logger.info('No CID found in the device config')
+        logger.info('Error seen: {0}'.format(e))
         # Index error is for if the SNMP contact is not defined in the config.
         try:
             '''
@@ -329,14 +350,21 @@ def gather_basic_facts(device, r):
                 logger.info(f'setting CID value to {str(ztp)}')
             else:
                 # Shouldn't be used, but just in case.
+                logger.info('No ZTP flag set in redis')
                 basic_facts['cid'] = 'none'
         except KeyError:
             # ztp isn't a valid key, so no ztp.
+            logger.info('Exception..setting CID to none.')
             basic_facts['cid'] = 'none'
+    '''
     except Exception as e:
         # Catch anything else here...
         # Shouldn't be hit.
-        print(str(e))
+        basic_facts['cid'] = 'none'
+        logger.info('Error when searching for CID')
+        logger.info('ZTP not checked')
+        logger.info('Error: {0}'.format(e))
+    '''
 
 
     # -------------------------------------------------------------------------------
