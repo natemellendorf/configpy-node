@@ -2,6 +2,7 @@ from threading import Thread
 from jnpr.junos import Device
 from jnpr.junos.utils.config import Config
 from jnpr.junos.exception import ConnectError
+from jnpr.junos.utils.sw import SW
 from jnpr.junos.exception import LockError
 from jnpr.junos.exception import UnlockError
 from jnpr.junos.exception import ConfigLoadError
@@ -10,7 +11,7 @@ from junospyez_ossh_server.log import logger
 import redis
 import requests
 from pprint import pprint
-import os
+import os, sys, logging
 import tempfile
 from datetime import datetime
 import socket
@@ -406,13 +407,46 @@ def gather_basic_facts(device, r):
     return basic_facts
 
 
+def update_software(dev, software_host, srx_firmware_url):
+    logger.info('Starting software update...')
+
+    def update_progress(dev, report):
+        # log the progress of the installing process
+        logger.info(report)
+
+    package = f'{software_host}/static/firmware/{srx_firmware_url}'
+    remote_path = '/var/tmp'
+    validate = True
+
+    # Create an instance of SW
+    logger.info('Create an instance of SW')
+    dev.bind(sw=SW)
+
+    try:
+        logging.info('Starting the software upgrade process...')
+        ok = dev.sw.install(package=package, remote_path=remote_path,
+                        progress=update_progress, validate=validate, timeout=2400, checksum_timeout=400)
+    except Exception as err:
+        msg = 'Unable to install software, {0}'.format(err)
+        logger.error(msg)
+        ok = False
+
+    if ok is True:
+        logger.info('Software installation complete. Rebooting')
+        rsp = dev.sw.reboot()
+        logger.info('Upgrade pending reboot cycle, please be patient.')
+        logger.info(rsp)
+
+    return
+
+
 class OutboundSSHServer(object):
 
     NAME = 'outbound-ssh-server'
     DEFAULT_LISTEN_BACKLOG = 10
     logger = logger
 
-    def __init__(self, ipaddr, port, login_user, login_password, redis_url, repo_uri, repo_auth_token, on_device=None, on_error=None, unittest=None):
+    def __init__(self, ipaddr, port, login_user, login_password, redis_url, repo_uri, repo_auth_token, software_host, on_device=None, on_error=None, unittest=None):
         """
         Parameters
         ----------
@@ -455,6 +489,7 @@ class OutboundSSHServer(object):
         self.login_password = login_password
         self.redis_url = redis_url
         self.repo_uri = repo_uri
+        self.software_host = software_host
         self.repo_auth_token = repo_auth_token
         self.bind_ipaddr = ipaddr
         self.bind_port = int(port)
@@ -624,6 +659,20 @@ class OutboundSSHServer(object):
             update_config(dev, facts, self.r, self.repo_uri, self.repo_auth_token)
             logger.info('Config audit complete.')
 
+            srx_firmware_url = 'junos-srxsme-15.1X49-D150.2-domestic.tgz'
+
+            logger.info(f'Desired firmware: {srx_firmware_url}')
+            logger.info(f'Device firmware: {facts["os_version"]}')
+
+            if 'SRX3' in facts['device_model'] and facts['os_version'] not in srx_firmware_url:
+                logger.info('Firmware does not match!')
+                self.r.hmset(facts['device_sn'], {'config': 'updating firmware'})
+                self.r.expire(facts['device_sn'], 600)
+                update_software(dev, self.software_host, srx_firmware_url)
+                logger.info('Firmware audit complete.')
+
+            logger.info('Firmware audit complete.')
+
             # call user on-device callback
             # self.on_device(dev, facts)
 
@@ -640,6 +689,7 @@ class OutboundSSHServer(object):
 
         finally:
             in_sock.close()
+            return
 
     # ----------------------------------------------------------------------------------------------------------------
     # PUBLIC METHODS
