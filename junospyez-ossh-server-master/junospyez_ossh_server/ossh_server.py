@@ -11,7 +11,7 @@ from junospyez_ossh_server.log import logger
 import redis
 import requests
 from pprint import pprint
-import os, sys, logging
+import os, sys
 import tempfile
 from datetime import datetime
 import socket
@@ -407,12 +407,14 @@ def gather_basic_facts(device, r):
     return basic_facts
 
 
-def update_software(dev, software_host, srx_firmware_url):
+def update_firmware(device, software_host, srx_firmware_url, r, facts):
     logger.info('Starting software update...')
+    r.hmset(facts['device_sn'], {'firmware_update': 'Starting software update...'})
 
-    def update_progress(dev, report):
+    def update_progress(device, report):
         # log the progress of the installing process
         logger.info(report)
+        r.hmset(facts['device_sn'], {'firmware_update': f'{report}'})
 
     package = f'{software_host}/static/firmware/{srx_firmware_url}'
     remote_path = '/var/tmp'
@@ -420,20 +422,22 @@ def update_software(dev, software_host, srx_firmware_url):
 
     # Create an instance of SW
     logger.info('Create an instance of SW')
-    dev.bind(sw=SW)
+    device.bind(sw=SW)
 
     try:
-        logging.info('Starting the software upgrade process...')
-        ok = dev.sw.install(package=package, remote_path=remote_path,
+        logger.info('Running installer...')
+        r.expire(facts['device_sn'], 2400)
+        r.hmset(facts['device_sn'], {'firmware_update': 'Running installer...'})
+        ok = device.sw.install(package=package, remote_path=remote_path,
                         progress=update_progress, validate=validate, timeout=2400, checksum_timeout=400)
     except Exception as err:
-        msg = 'Unable to install software, {0}'.format(err)
+        msg = f'Unable to install software, {err}'
         logger.error(msg)
         ok = False
 
     if ok is True:
         logger.info('Software installation complete. Rebooting')
-        rsp = dev.sw.reboot()
+        rsp = device.sw.reboot(all_re=False)
         logger.info('Upgrade pending reboot cycle, please be patient.')
         logger.info(rsp)
 
@@ -659,7 +663,7 @@ class OutboundSSHServer(object):
             update_config(dev, facts, self.r, self.repo_uri, self.repo_auth_token)
             logger.info('Config audit complete.')
 
-            srx_firmware_url = 'junos-srxsme-15.1X49-D150.2-domestic.tgz'
+            srx_firmware_url = 'junos-srxsme-15.1X49-D170.4-domestic.tgz'
 
             logger.info(f'Desired firmware: {srx_firmware_url}')
             logger.info(f'Device firmware: {facts["os_version"]}')
@@ -667,9 +671,9 @@ class OutboundSSHServer(object):
             if 'SRX3' in facts['device_model'] and facts['os_version'] not in srx_firmware_url:
                 logger.info('Firmware does not match!')
                 self.r.hmset(facts['device_sn'], {'config': 'updating firmware'})
-                self.r.expire(facts['device_sn'], 600)
-                update_software(dev, self.software_host, srx_firmware_url)
-                logger.info('Firmware audit complete.')
+                self.r.expire(facts['device_sn'], 900)
+                logger.info('Setting device DB timeout for 15 min while update is performed.')
+                update_firmware(dev, self.software_host, srx_firmware_url, self.r, facts)
 
             logger.info('Firmware audit complete.')
 
