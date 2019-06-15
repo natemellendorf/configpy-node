@@ -291,6 +291,10 @@ def gather_basic_facts(device, r):
     # -----------------------------------------------------
 
     basic_facts = dict()
+    for x, y in device.facts.items():
+        basic_facts[f'{x}'] = f'{y}'
+
+    # TODO: Most if this code below should be reworked.
     basic_facts['device_sn'] = device.facts['serialnumber']
     
     if device.facts['hostname'] is None:
@@ -298,13 +302,13 @@ def gather_basic_facts(device, r):
         logger.info('No hostname')
     else:
         basic_facts['hostname'] = device.facts['hostname']
-    
-    # Gather device specific faqs
+
     if device.facts['srx_cluster']:
         logger.info('Device: SRX Cluster!')
         basic_facts['srx_cluster'] = 'True'
         basic_facts['os_version'] = device.facts['version_RE0']
         basic_facts['device_model'] = device.facts['model_info']['node0']
+        basic_facts['hostname'] = device.facts['hostname_info']['node0']
     else:
         # Gather general faqs
         basic_facts['os_version'] = device.facts['version']
@@ -663,7 +667,7 @@ class OutboundSSHServer(object):
             update_config(dev, facts, self.r, self.repo_uri, self.repo_auth_token)
             logger.info('Config audit complete.')
 
-            srx_firmware_url = 'junos-srxsme-15.1X49-D170.4-domestic.tgz'
+            srx_firmware_url = 'junos-srxsme-18.2R1.9.tgz'
 
             logger.info(f'Desired firmware: {srx_firmware_url}')
             logger.info(f'Device firmware: {facts["os_version"]}')
@@ -688,11 +692,13 @@ class OutboundSSHServer(object):
         except Exception as exc:
             error = f"ERROR: unable to process device {in_addr}:{in_port}: %s" % str(exc)
             logger.error(error)
+            sys.exit(1)
             if self.on_error:
                 self.on_error(dev, exc)
 
         finally:
             in_sock.close()
+            sys.exit(1)
             return
 
     # ----------------------------------------------------------------------------------------------------------------
