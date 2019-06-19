@@ -667,7 +667,7 @@ class OutboundSSHServer(object):
             update_config(dev, facts, self.r, self.repo_uri, self.repo_auth_token)
             logger.info('Config audit complete.')
 
-            srx_firmware_url = 'junos-srxsme-18.2R1.9.tgz'
+            srx_firmware_url = 'junos-srxsme-15.1X49-D170.4-domestic.tgz'
 
             logger.info(f'Desired firmware: {srx_firmware_url}')
             logger.info(f'Device firmware: {facts["os_version"]}')
