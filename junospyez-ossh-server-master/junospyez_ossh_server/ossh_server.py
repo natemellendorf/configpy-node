@@ -75,6 +75,12 @@ def repo_sync(redis, **kwargs):
                 logger.info('Grabbing device config from repo...')
                 returned = requests.get(raw_config_file, headers=headers, timeout=5)
                 if returned.status_code == 200:
+                    url_list = ['edit', 'blob']
+                    for item in url_list:
+                        url = f'{kwargs["repo_uri"]}/{item}/master/{kwargs["cid"]}/{kwargs["device_sn"]}.set'
+                        redis.hmset(kwargs["device_sn"], {f'device_repo_{item}': f'{url}'})
+                        print(url)
+
                     return returned
                 else:
                     raise Exception(f'{returned.text}')
