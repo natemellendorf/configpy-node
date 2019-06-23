@@ -665,7 +665,7 @@ class OutboundSSHServer(object):
 
             logger.info(f'{new_log_event()}Gathering basic facts from device via: {via_str}')
             facts = gather_basic_facts(dev, self.r)
-            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}{json.dumps(facts, indent=3)}')
+            #logger.info(f'{new_log_event(device_sn=facts["device_sn"])}{json.dumps(facts, indent=3)}')
 
             try:
                 facts = convert(facts)

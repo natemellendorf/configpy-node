@@ -1,32 +1,56 @@
 from junospyez_ossh_server import OutboundSSHServer
 import logging
-from sys import argv
+import argparse
+from pprint import pprint
+import json
 
-error_message = 'Must run server with args:\r\npython run_server.py USERNAME PASSWORD REDIS_IP'
 
-def start(**kwargs):
-    if kwargs['login_user'] and kwargs['login_password'] and kwargs['redis_url']:
-        server = OutboundSSHServer('0.0.0.0', port=9000,
-                                   login_user=kwargs['login_user'],
-                                   login_password=kwargs['login_password'],
-                                   redis_url=kwargs['redis_url'],
-                                   repo_uri=kwargs['repo_uri'],
-                                   repo_auth_token=kwargs['repo_auth_token'],
-                                   software_host=kwargs['software_host']
+def start(args):
+    try:
+        server = OutboundSSHServer(args.ip,
+                                   port=args.port,
+                                   login_user=args.user,
+                                   login_password=args.password,
+                                   redis_url=args.redis_url,
+                                   repo_uri=args.repo_uri,
+                                   repo_auth_token=args.repo_auth_token,
+                                   software_host=args.software_host,
+                                   srx_firmware=args.srx_firmware
                                    )
+
+        # Enable logging to console
         server.logger.setLevel(logging.INFO)
         server.logger.addHandler(logging.StreamHandler())
+
+        # Attempt to run ConfigPy-Node
         server.start()
-    else:
-        print(error_message)
+
+    except Exception as e:
+        # If en exception is raised, print the exception to th console.
+        print(e)
 
 
 if __name__ == '__main__':
-    # FIXME - Need to find a better way to handle args...
-    if len(argv) == 7:
-        try:
-            start(login_user=argv[1], login_password=argv[2], redis_url=argv[3], repo_uri=argv[4], repo_auth_token=argv[5], software_host=argv[6])
-        except Exception as e:
-            print(e)
-    else:
-        print(error_message)
+
+    # Leverage argparse to validate and store arguments passed to the script.
+    parser = argparse.ArgumentParser(description='configpy-node')
+    parser.add_argument('-ip', default='0.0.0.0',  help='IP address to listen on.', required=False)
+    parser.add_argument('-port', default='9000', help='TCP port to listen on.', required=False)
+    parser.add_argument('-user', help='Username used to login to Junos devices', required=True)
+    parser.add_argument('-password', help='Password used ot login to Junos devices.', required=True)
+    parser.add_argument('-redis_url', help='FQDN of your IP of Redis DB/container.', required=True)
+    parser.add_argument('-repo_uri', help='URI to your GitLab repository which houses your configs.', required=True)
+    parser.add_argument('-repo_auth_token', help='Authentication token to access your GitLab API.', required=True)
+    parser.add_argument('-software_host', help='URL or IP to a folder which houses your Junos firmware.', required=True)
+    parser.add_argument('-srx_firmware', help='Exact name of the firmware file stored on the -software_host for the SRX300 series', required=True)
+
+    # Parse the arguments provided, and store them in the args var.
+    args = parser.parse_args()
+
+    try:
+        # Pass the arguments provided to the start function, which will attempt to start the server.
+        start(args)
+
+    except Exception as e:
+        # If any exception is raised, store the output as var e and then print it to the console.
+        print(e)
