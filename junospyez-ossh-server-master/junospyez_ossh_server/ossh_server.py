@@ -427,7 +427,7 @@ def update_firmware(device, software_host, srx_firmware_url, r, facts):
         logger.info(f'{new_log_event(device_sn=facts["device_sn"])}{report}')
         r.hmset(facts['device_sn'], {'firmware_update': f'{report}'})
 
-    package = f'{software_host}/static/firmware/{srx_firmware_url}'
+    package = f'{software_location}{srx_firmware_url}'
     remote_path = '/var/tmp'
     validate = True
 
@@ -462,7 +462,7 @@ class OutboundSSHServer(object):
     DEFAULT_LISTEN_BACKLOG = 10
     logger = logger
 
-    def __init__(self, ipaddr, port, login_user, login_password, redis_url, repo_uri, repo_auth_token, software_host, srx_firmware, on_device=None, on_error=None, unittest=None):
+    def __init__(self, ipaddr, port, login_user, login_password, redis_url, repo_uri, repo_auth_token, software_location, srx_firmware, on_device=None, on_error=None, unittest=None):
         """
         Parameters
         ----------
@@ -505,7 +505,7 @@ class OutboundSSHServer(object):
         self.login_password = login_password
         self.redis_url = redis_url
         self.repo_uri = repo_uri
-        self.software_host = software_host
+        self.software_location = software_location
         self.srx_firmware = srx_firmware
         self.repo_auth_token = repo_auth_token
         self.bind_ipaddr = ipaddr
@@ -689,9 +689,9 @@ class OutboundSSHServer(object):
                 logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Device firmware: {facts["os_version"]}')
 
                 # Check for a firmware mismatch:
-                if facts['os_version'] not in self.srx_firmware:
-                    logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Firmware mismatch detected!')
+                if facts['os_version'] not in self.srx_firmware and '.tgz' in self.srx_firmware:
                     logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Desired firmware: {self.srx_firmware}')
+                    logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Firmware mismatch detected!')
 
                     # Start firmware upgrade if device is not in an SRX cluster.
                     if facts['srx_cluster'] == 'False':
@@ -699,11 +699,15 @@ class OutboundSSHServer(object):
                         self.r.hmset(facts['device_sn'], {'config': 'updating firmware'})
                         self.r.expire(facts['device_sn'], 900)
                         logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Setting device DB timeout for 15 min while update is performed.')
-                        update_firmware(dev, self.software_host, self.srx_firmware, self.r, facts)
+                        update_firmware(dev, self.software_location, self.srx_firmware, self.r, facts)
 
                     # If else, the device is clustered. PyEZ does not support upgrades of clusters yet. (needs testing)
                     else:
-                        logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Device is clustered. Audit abort')
+                        logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Device is clustered. Audit abort.')
+
+                elif facts['os_version'] in self.srx_firmware and '.tgz' in self.srx_firmware:
+                    logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Desired firmware: {self.srx_firmware}')
+                    logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Firmware is compliant.')
 
 
             logger.info(f'{new_log_event(device_sn=facts["device_sn"])}>>>> Firmware audit complete.')

@@ -14,7 +14,7 @@ def start(args):
                                    redis_url=args.redis_url,
                                    repo_uri=args.repo_uri,
                                    repo_auth_token=args.repo_auth_token,
-                                   software_host=args.software_host,
+                                   software_location=args.software_location,
                                    srx_firmware=args.srx_firmware
                                    )
 
@@ -41,8 +41,8 @@ if __name__ == '__main__':
     parser.add_argument('-redis_url', help='FQDN of your IP of Redis DB/container.', required=True)
     parser.add_argument('-repo_uri', help='URI to your GitLab repository which houses your configs.', required=True)
     parser.add_argument('-repo_auth_token', help='Authentication token to access your GitLab API.', required=True)
-    parser.add_argument('-software_host', help='URL or IP to a folder which houses your Junos firmware.', required=True)
-    parser.add_argument('-srx_firmware', help='Exact name of the firmware file stored on the -software_host for the SRX300 series', required=True)
+    parser.add_argument('-software_location', help='URL or IP to a folder which houses your Junos firmware.', required=True)
+    parser.add_argument('-srx_firmware', help='Exact name of the firmware file stored on the -software_location for the SRX300 series', required=True)
 
     # Parse the arguments provided, and store them in the args var.
     args = parser.parse_args()
