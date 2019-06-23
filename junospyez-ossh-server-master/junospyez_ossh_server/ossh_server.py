@@ -418,7 +418,7 @@ def gather_basic_facts(device, r):
     return basic_facts
 
 
-def update_firmware(device, software_host, srx_firmware_url, r, facts):
+def update_firmware(device, software_location, srx_firmware_url, r, facts):
     logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Starting software update...')
     r.hmset(facts['device_sn'], {'firmware_update': 'Starting software update...'})
 
