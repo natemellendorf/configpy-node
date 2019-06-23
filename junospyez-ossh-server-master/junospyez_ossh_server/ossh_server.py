@@ -680,26 +680,41 @@ class OutboundSSHServer(object):
             # Firmware Check / Update
             ########################################
 
-            #srx_firmware = 'junos-srxsme-15.1X49-D170.4-domestic.tgz'
+            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}>>>> Starting firmware audit...')
 
-            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Desired firmware: {self.srx_firmware}')
-            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Device firmware: {facts["os_version"]}')
 
-            if 'SRX3' in facts['device_model'] and facts['srx_cluster'] == 'False' and facts['os_version'] not in self.srx_firmware:
-                logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Firmware does not match!')
-                self.r.hmset(facts['device_sn'], {'config': 'updating firmware'})
-                self.r.expire(facts['device_sn'], 900)
-                logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Setting device DB timeout for 15 min while update is performed.')
-                update_firmware(dev, self.software_host, self.srx_firmware, self.r, facts)
+            # Check is SRX 300, 320, 340, or 345:
+            if 'SRX3' in facts['device_model']:
+                logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Device type: SRX')
+                logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Device firmware: {facts["os_version"]}')
 
-            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Firmware audit complete.')
+                # Check for a firmware mismatch:
+                if facts['os_version'] not in self.srx_firmware:
+                    logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Firmware mismatch detected!')
+                    logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Desired firmware: {self.srx_firmware}')
+
+                    # Start firmware upgrade if device is not in an SRX cluster.
+                    if facts['srx_cluster'] == 'False':
+                        logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Device is not in a cluster.')
+                        self.r.hmset(facts['device_sn'], {'config': 'updating firmware'})
+                        self.r.expire(facts['device_sn'], 900)
+                        logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Setting device DB timeout for 15 min while update is performed.')
+                        update_firmware(dev, self.software_host, self.srx_firmware, self.r, facts)
+
+                    # If else, the device is clustered. PyEZ does not support upgrades of clusters yet. (needs testing)
+                    else:
+                        logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Device is clustered. Audit abort')
+
+
+            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}>>>> Firmware audit complete.')
 
             ########################################
             # Config Check / Update
             ########################################
 
+            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}>>>> Starting config audit...')
             update_config(dev, facts, self.r, self.repo_uri, self.repo_auth_token)
-            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Config audit complete.')
+            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}>>>> Config audit complete')
 
             # call user on-device callback
             # self.on_device(dev, facts)
