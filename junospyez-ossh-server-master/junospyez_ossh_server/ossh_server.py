@@ -14,6 +14,7 @@ from pprint import pprint
 import os, sys
 import tempfile
 from datetime import datetime
+import time
 import socket
 import json
 import warnings
@@ -82,10 +83,21 @@ def repo_sync(redis, facts, **kwargs):
     for x in returned:
         if x['path_with_namespace'] in kwargs["repo_uri"]:
             raw_config_file = f'{findall}/{x["id"]}/repository/files/{kwargs["cid"]}%2F{kwargs["device_sn"]}%2Eset/raw?ref=master'
+
+            if kwargs['ztp_cluster_node']:
+                logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Grabbing cluster commands for node {kwargs["ztp_cluster_node"]}')
+                raw_config_file = f'{findall}/{x["id"]}/repository/files/cluster_node{kwargs["ztp_cluster_node"]}%2Eset/raw?ref=master'
+
             try:
                 logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Grabbing device config from repo...')
                 returned = requests.get(raw_config_file, headers=headers, timeout=5)
-                if returned.status_code == 200:
+
+                if returned.status_code == 200 and kwargs['ztp_cluster_node']:
+                    logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Clustering config acquired.')
+                    return returned
+
+                elif returned.status_code == 200:
+                    logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Device config acquired.')
                     url_list = ['edit', 'blob']
                     for item in url_list:
                         url = f'{kwargs["repo_uri"]}/{item}/master/{kwargs["cid"]}/{kwargs["device_sn"]}.set'
@@ -102,27 +114,13 @@ def repo_sync(redis, facts, **kwargs):
                 return
 
 
-def update_config(device, facts, r, repo_uri, repo_auth_token):
-
-    # FIXME - This whole function should be reviewed and cleaned up.
+def update_config(device, facts, r, repo_uri, repo_auth_token, ztp_cluster_node=None):
 
     # Attempt to find the config file for the connected device
     logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Searching {repo_uri} in directory {facts["cid"]} for {facts["device_sn"]}.set')
 
-    conf_file = repo_sync(r, facts, repo_uri=repo_uri, cid=facts['cid'], device_sn=facts['device_sn'],
+    conf_file = repo_sync(r, facts, repo_uri=repo_uri, cid=facts['cid'], device_sn=facts['device_sn'], ztp_cluster_node=ztp_cluster_node,
                        repo_auth_token=repo_auth_token)
-
-    '''
-    WIP:
-    try:
-        new_file, filename = tempfile.mkstemp()
-
-        print(filename)
-    except Exception as e:
-        logger.error(str(e))
-    '''
-
-    # FIXME - This is not ideal, and should be modified so the config is never written to the local storage.
 
     # If found, save the file so it can be loaded by PyEz.
     config_file_location = f'configs/{facts["device_sn"]}.set'
@@ -324,8 +322,15 @@ def gather_basic_facts(device, r):
         logger.info(f'{new_log_event(device_sn=basic_facts["device_sn"])}Device: SRX Cluster!')
         basic_facts['srx_cluster'] = 'True'
         basic_facts['os_version'] = device.facts['version_RE0']
-        basic_facts['device_model'] = device.facts['model_info']['node0']
-        basic_facts['hostname'] = device.facts['hostname_info']['node0']
+
+        try:
+            basic_facts['device_model'] = device.facts['model_info']['node0']
+        except:
+            basic_facts['device_model'] = 'error'
+        try:
+            basic_facts['hostname'] = device.facts['hostname_info']['node0']
+        except:
+            basic_facts['device_model'] = 'error'
     else:
         # Gather general faqs
         basic_facts['os_version'] = device.facts['version']
@@ -711,6 +716,31 @@ class OutboundSSHServer(object):
 
 
             logger.info(f'{new_log_event(device_sn=facts["device_sn"])}>>>> Firmware audit complete.')
+
+            ########################################
+            # Configure Clustering
+            ########################################
+
+            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}>>>> Starting ZTP cluster audit')
+            device = self.r.hgetall(facts["device_sn"])
+
+            device_values = {}
+            for x, y in device.items():
+                device_values[x.decode("utf-8")] = y.decode("utf-8")
+
+            pprint(device_values)
+
+            if 'ztp_cluster_node' in device_values:
+                logger.info(f'{new_log_event(device_sn=facts["device_sn"])}ZTP cluster flag set!')
+                update_config(dev, facts, self.r, self.repo_uri, self.repo_auth_token, ztp_cluster_node=device_values['ztp_cluster_node'])
+                logger.info(f'{new_log_event(device_sn=facts["device_sn"])}>>>> ZTP Cluster audit complete')
+                logger.info(f'{new_log_event(device_sn=facts["device_sn"])}>>>> Disconnecting - Device needs to reboot.')
+                dev.close()
+                return
+            else:
+                logger.info(f'{new_log_event(device_sn=facts["device_sn"])}ZTP Cluster flag not set.')
+
+            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}>>>> ZTP Cluster audit complete')
 
             ########################################
             # Config Check / Update
