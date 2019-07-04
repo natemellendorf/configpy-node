@@ -85,11 +85,11 @@ def repo_sync(redis, facts, **kwargs):
             raw_config_file = f'{findall}/{x["id"]}/repository/files/{kwargs["cid"]}%2F{kwargs["device_sn"]}%2Eset/raw?ref=master'
 
             if kwargs['ztp_cluster_node']:
-                logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Grabbing cluster commands for node {kwargs["ztp_cluster_node"]}')
+                logger.info(f'{new_log_event(device_sn=facts["device_sn"])}clustering config override engaged! {kwargs["ztp_cluster_node"]}')
                 raw_config_file = f'{findall}/{x["id"]}/repository/files/cluster_node{kwargs["ztp_cluster_node"]}%2Eset/raw?ref=master'
 
             try:
-                logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Grabbing device config from repo...')
+                logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Grabbing config file from repo...')
                 returned = requests.get(raw_config_file, headers=headers, timeout=5)
 
                 if returned.status_code == 200 and kwargs['ztp_cluster_node']:
@@ -685,7 +685,7 @@ class OutboundSSHServer(object):
             # Firmware Check / Update
             ########################################
 
-            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}>>>> Starting firmware audit...')
+            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}***** TASK : Starting firmware audit...')
 
 
             # Check is SRX 300, 320, 340, or 345:
@@ -715,40 +715,50 @@ class OutboundSSHServer(object):
                     logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Firmware is compliant.')
 
 
-            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}>>>> Firmware audit complete.')
+            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}***** TASK : Firmware audit complete.')
 
             ########################################
             # Configure Clustering
             ########################################
 
-            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}>>>> Starting ZTP cluster audit')
+            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}***** TASK : Starting ZTP cluster audit')
             device = self.r.hgetall(facts["device_sn"])
 
             device_values = {}
             for x, y in device.items():
                 device_values[x.decode("utf-8")] = y.decode("utf-8")
 
-            pprint(device_values)
+            #pprint(device_values)
 
             if 'ztp_cluster_node' in device_values:
                 logger.info(f'{new_log_event(device_sn=facts["device_sn"])}ZTP cluster flag set!')
                 update_config(dev, facts, self.r, self.repo_uri, self.repo_auth_token, ztp_cluster_node=device_values['ztp_cluster_node'])
-                logger.info(f'{new_log_event(device_sn=facts["device_sn"])}>>>> ZTP Cluster audit complete')
-                logger.info(f'{new_log_event(device_sn=facts["device_sn"])}>>>> Disconnecting - Device needs to reboot.')
+                logger.info(f'{new_log_event(device_sn=facts["device_sn"])}***** TASK : ZTP Cluster audit complete')
+
+                try:
+                    self.r.hdel(facts['device_sn'], 'ztp_cluster_node')
+                    logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Successfully removed "ztp_cluster_node"')
+                except Exception as e:
+                    logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Failed to remove "ztp_cluster_node" key.')
+
                 dev.close()
+                self.r.hmset(facts['device_sn'], {'config': 'clustering'})
+                logger.info(f'{new_log_event(device_sn=facts["device_sn"])}***** TASK : Disconnecting - Device needs to reboot.')
+
                 return
+
             else:
                 logger.info(f'{new_log_event(device_sn=facts["device_sn"])}ZTP Cluster flag not set.')
 
-            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}>>>> ZTP Cluster audit complete')
+            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}***** TASK : ZTP Cluster audit complete')
 
             ########################################
             # Config Check / Update
             ########################################
 
-            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}>>>> Starting config audit...')
+            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}***** TASK : Starting config audit...')
             update_config(dev, facts, self.r, self.repo_uri, self.repo_auth_token)
-            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}>>>> Config audit complete')
+            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}***** TASK : Config audit complete')
 
             # call user on-device callback
             # self.on_device(dev, facts)
