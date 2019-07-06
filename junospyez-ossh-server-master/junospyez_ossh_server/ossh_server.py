@@ -44,8 +44,7 @@ def new_log_event(**kwargs):
 
     try:
         if sio:
-            data = {'event_time': get_time(), 'event': event}
-            sio.emit('console', data)
+            data = {'event_time': get_time(), 'event': f'[{device_sn}]: {event}'}
             sio.emit('hub_console', data)
 
     except Exception as e:
