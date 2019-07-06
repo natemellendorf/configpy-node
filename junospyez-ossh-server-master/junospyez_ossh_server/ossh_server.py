@@ -20,6 +20,7 @@ import json
 import warnings
 from lxml import etree
 import xmltodict
+import socketio
 
 
 warnings.filterwarnings(action='ignore', module='.*paramiko.*')
@@ -32,20 +33,33 @@ def get_time():
     return poll
 
 
-def new_log_event(device_sn='_UNKNOWN_'):
-    log = f'[{get_time()}][{device_sn}]: '
-    return log
+def new_log_event(**kwargs):
+    device_sn = kwargs.get('device_sn', '__UNKNOWN__')
+    event = kwargs.get('event', '')
+    configpy_url = kwargs.get('configpy_url', 'http://10.0.0.204:80')
+    sio = kwargs.get('sio', None)
+
+    log = f'[{get_time()}][{device_sn}]: {event}'
+    logger.info(log)
+
+    try:
+        if sio:
+            data = {'event_time': get_time(), 'event': event}
+            sio.emit('console', data)
+            sio.emit('hub_console', data)
+
+    except Exception as e:
+        logger.info(f'SocketIO Exception: {str(e)}')
 
 
 def convert(data):
-
     json_data = json.dumps(data)
     result = json.loads(json_data)
     return result
 
 
 def repo_sync(redis, facts, **kwargs):
-
+    sio = kwargs['sio']
     words = kwargs["repo_uri"].split("/")
     protocol = words[0]
     domain = words[2]
@@ -65,17 +79,17 @@ def repo_sync(redis, facts, **kwargs):
     querystring = {"per_page": "100"}
 
     try:
-        logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Reaching out to gather repo information...')
+        new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Reaching out to gather repo information...')
         r = requests.get(findall, headers=headers, params=querystring, timeout=5)
 
         if r.status_code == 200:
             returned = r.json()
         else:
-            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Unable to access repo.')
+            new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Unable to access repo.')
             raise Exception(f'{r.text}')
 
     except Exception as e:
-        logger.error(f'{new_log_event(device_sn=facts["device_sn"])}{str(e)}')
+        new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'{str(e)}')
         redis.hmset(kwargs["device_sn"], {'config': 'repo error'})
         redis.hmset(kwargs["device_sn"], {'repo_error': f'{str(e)}'})
         return
@@ -85,19 +99,19 @@ def repo_sync(redis, facts, **kwargs):
             raw_config_file = f'{findall}/{x["id"]}/repository/files/{kwargs["cid"]}%2F{kwargs["device_sn"]}%2Eset/raw?ref=master'
 
             if kwargs['ztp_cluster_node']:
-                logger.info(f'{new_log_event(device_sn=facts["device_sn"])}clustering config override engaged! {kwargs["ztp_cluster_node"]}')
+                new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'clustering config override engaged! {kwargs["ztp_cluster_node"]}')
                 raw_config_file = f'{findall}/{x["id"]}/repository/files/cluster_node{kwargs["ztp_cluster_node"]}%2Eset/raw?ref=master'
 
             try:
-                logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Grabbing config file from repo...')
+                new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Grabbing config file from repo...')
                 returned = requests.get(raw_config_file, headers=headers, timeout=5)
 
                 if returned.status_code == 200 and kwargs['ztp_cluster_node']:
-                    logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Clustering config acquired.')
+                    new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Clustering config acquired.')
                     return returned
 
                 elif returned.status_code == 200:
-                    logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Device config acquired.')
+                    new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Device config acquired.')
                     url_list = ['edit', 'blob']
                     for item in url_list:
                         url = f'{kwargs["repo_uri"]}/{item}/master/{kwargs["cid"]}/{kwargs["device_sn"]}.set'
@@ -108,19 +122,19 @@ def repo_sync(redis, facts, **kwargs):
                 else:
                     raise Exception(f'{returned.text}')
             except Exception as e:
-                logger.error(f'{new_log_event(device_sn=facts["device_sn"])}{str(e)}')
+                new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'{str(e)}')
                 redis.hmset(kwargs["device_sn"], {'config': 'repo error'})
                 redis.hmset(kwargs["device_sn"], {'repo_error': f'{str(e)}'})
                 return
 
 
-def update_config(device, facts, r, repo_uri, repo_auth_token, ztp_cluster_node=None):
+def update_config(device, facts, r, repo_uri, repo_auth_token, sio=None, ztp_cluster_node=None):
 
     # Attempt to find the config file for the connected device
-    logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Searching {repo_uri} in directory {facts["cid"]} for {facts["device_sn"]}.set')
+    new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Searching {repo_uri} in directory {facts["cid"]} for {facts["device_sn"]}.set')
 
     conf_file = repo_sync(r, facts, repo_uri=repo_uri, cid=facts['cid'], device_sn=facts['device_sn'], ztp_cluster_node=ztp_cluster_node,
-                       repo_auth_token=repo_auth_token)
+                       repo_auth_token=repo_auth_token, sio=sio)
 
     # If found, save the file so it can be loaded by PyEz.
     config_file_location = f'configs/{facts["device_sn"]}.set'
@@ -131,14 +145,14 @@ def update_config(device, facts, r, repo_uri, repo_auth_token, ztp_cluster_node=
             with open(config_file_location, "w") as file:
                 file.write(conf_file.text)
     except AttributeError:
-        logger.error(f'{new_log_event(device_sn=facts["device_sn"])}Unable to access remote repo')
+        new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Unable to access remote repo')
         r.hmset(facts['device_sn'], {'config': 'repo error'})
         return
     except Exception as e:
-        logger.error(f'{new_log_event(device_sn=facts["device_sn"])}Unable to access remote repo')
+        new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Unable to access remote repo')
         r.hmset(facts['device_sn'], {'config': 'repo error'})
-        logger.error(f'{new_log_event(device_sn=facts["device_sn"])}default exception.')
-        logger.error(str(e))
+        new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'default exception.')
+        new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'{str(e)}')
         return
 
     # Check to see if config file exists.
@@ -149,30 +163,30 @@ def update_config(device, facts, r, repo_uri, repo_auth_token, ztp_cluster_node=
         device.timeout = 300
 
         # Lock the configuration, load configuration changes, and commit
-        logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Locking the configuration')
+        new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Locking the configuration')
         try:
             device.cu.lock()
         except LockError as err:
-            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Unable to lock configuration: {err}')
+            new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Unable to lock configuration: {err}')
             device.close()
             return
 
-        logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Loading configuration changes')
+        new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Loading configuration changes')
 
         try:
             device.cu.load(path=config_file_location, merge=True, ignore_warning='statement not found')
         except (ConfigLoadError, Exception) as err:
-            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Unable to load configuration changes: {err}')
-            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Unlocking the configuration')
+            new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Unable to load configuration changes: {err}')
+            new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Unlocking the configuration')
             try:
                 device.cu.unlock()
             except UnlockError:
-                logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Unable to unlock configuration: {err}')
+                new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Unable to unlock configuration: {err}')
             try:
                 os.remove(config_file_location)
             except Exception as e:
-                logger.error(f'{new_log_event(device_sn=facts["device_sn"])}Unable to delete {config_file_location}')
-                logger.error(str(e))
+                new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Unable to delete {config_file_location}')
+                new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'{str(e)}')
 
             device.close()
             return
@@ -180,114 +194,112 @@ def update_config(device, facts, r, repo_uri, repo_auth_token, ztp_cluster_node=
         show_compare = device.cu.diff(rb_id=0)
 
         if show_compare is None:
-            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}*** No changes needed...')
+            new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'*** No changes needed...')
             try:
                 r.hmset(facts['device_sn'], {'config': 'compliant'})
             except Exception as e:
-                logger.info(f'{new_log_event(device_sn=facts["device_sn"])}{e}')
+                new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'{e}')
 
         else:
-            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Changes found!')
+            new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Changes found!')
             try:
                 r.hmset(facts['device_sn'], {'config': 'non-compliant'})
                 r.hmset(facts['device_sn'], {'last change': show_compare})
             except Exception as e:
-                logger.info(f'{new_log_event(device_sn=facts["device_sn"])}{e}')
-            logger.info(show_compare)
-            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Updating config...')
+                new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'{e}')
+            new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'{show_compare}')
+            new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Updating config...')
 
             try:
-                logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Running commit check...')
+                new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Running commit check...')
                 try:
                     r.hmset(facts['device_sn'], {'config': 'running commit check'})
                 except Exception as e:
-                    logger.info(f'{new_log_event(device_sn=facts["device_sn"])}{e}')
+                    new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'{e}')
 
                 if device.cu.commit_check() is True:
                     try:
                         r.hmset(facts['device_sn'], {'config': 'commit check passed'})
                         r.hmset(facts['device_sn'], {'config': 'running commit confirmed'})
                     except Exception as e:
-                        logger.info(f'{new_log_event(device_sn=facts["device_sn"])}{e}')
-                    logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Commit check passed.')
-                    logger.info(f'{new_log_event(device_sn=facts["device_sn"])}running commit confirmed')
+                        new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'{e}')
+                    new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Commit check passed.')
+                    new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'running commit confirmed')
 
 
                     try:
                         commit = device.cu.commit(comment='Loaded by DSC.', confirm=2, timeout=240)
 
                         if commit:
-                            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Commit complete.')
-                            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Confirming changes...')
+                            new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Commit complete.')
+                            new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Confirming changes...')
                             try:
                                 r.hmset(facts['device_sn'], {'config': 'confirm commit'})
                             except Exception as e:
-                                logger.info(e)
+                                new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'{str(e)}')
 
                             if device.cu.commit_check():
                                 try:
                                     r.hmset(facts['device_sn'], {'config': 'compliant'})
-                                    logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Commit confirmed.')
+                                    new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Commit confirmed.')
                                 except Exception as e:
-                                    logger.info(e)
+                                    new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'{e}')
 
                     except Exception as e:
-                        logger.info(str(e))
+                        new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'{e}')
                         r.hmset(facts['device_sn'], {'config': 'device lost'})
                         return
                 else:
                     r.hmset(facts['device_sn'], {'config': 'commit check failed'})
-                    logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Commit check failed...')
+                    new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Commit check failed...')
                     device.cu.unlock()
                     try:
                         os.remove(config_file_location)
                     except Exception as e:
-                        logger.error(f'{new_log_event(device_sn=facts["device_sn"])}Unable to delete {config_file_location}')
-                        logger.error(str(e))
+                        new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Unable to delete {config_file_location}')
+                        new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'{e}')
 
             except CommitError as err:
-                logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Unable to commit configuration: {err}')
-                logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Unlocking the configuration')
+                new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Unable to commit configuration: {err}')
+                new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Unlocking the configuration')
                 try:
                     device.cu.unlock()
                 except UnlockError as err:
-                    logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Unable to unlock configuration: {err}')
+                    new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Unable to unlock configuration: {err}')
 
                 try:
                     os.remove(config_file_location)
                 except Exception as e:
-                    logger.error(f'{new_log_event(device_sn=facts["device_sn"])}Unable to delete {config_file_location}')
-                    logger.error(str(e))
+                    new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Unable to delete {config_file_location}')
+                    new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'{str(e)}')
 
                 device.close()
                 return
 
-        logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Unlocking the configuration')
+        new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Unlocking the configuration')
         try:
             device.cu.unlock()
         except UnlockError as err:
-            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Unable to unlock configuration: {err}')
+            new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Unable to unlock configuration: {err}')
             device.close()
-        logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Removing local config file')
+        new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Removing local config file')
 
         try:
             os.remove(config_file_location)
-            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Config removed.')
+            new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Config removed.')
         except Exception as e:
-            logger.error(f'{new_log_event(device_sn=facts["device_sn"])}Unable to delete {config_file_location}')
-            logger.error(str(e))
+            new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Unable to delete {config_file_location}')
+            new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'{str(e)}')
 
     else:
-        logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Config was not found for {facts["device_sn"]}')
+        new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Config was not found for {facts["device_sn"]}')
         r.hmset(facts['device_sn'], {'configpy-node_error': 'Could not locate config in configs/'})
         r.hmset(facts['device_sn'], {'config': 'repo error'})
 
-    # device.close()
-    
     return
     
 
-def gather_basic_facts(device, r):
+def gather_basic_facts(device, r, sio):
     """
     Using the provide Junos Device object, retrieve basic facts about the device.
 
@@ -314,12 +326,12 @@ def gather_basic_facts(device, r):
     
     if device.facts['hostname'] is None:
         basic_facts['hostname'] = 'no_hostname'
-        logger.info(f'{new_log_event(device_sn=basic_facts["device_sn"])}No hostname')
+        new_log_event(sio=sio, device_sn=basic_facts["device_sn"], event=f'No hostname')
     else:
         basic_facts['hostname'] = device.facts['hostname']
 
     if device.facts['srx_cluster']:
-        logger.info(f'{new_log_event(device_sn=basic_facts["device_sn"])}Device: SRX Cluster!')
+        new_log_event(sio=sio, device_sn=basic_facts["device_sn"], event=f'Device: SRX Cluster!')
         basic_facts['srx_cluster'] = 'True'
         basic_facts['os_version'] = device.facts['version_RE0']
 
@@ -341,19 +353,19 @@ def gather_basic_facts(device, r):
     # Get SNMP contact ID:
     try:
         # Look for SNMP contact in config.
-        logger.info(f'{new_log_event(device_sn=basic_facts["device_sn"])}Attempting to find SNMP in config..')
+        new_log_event(sio=sio, device_sn=basic_facts["device_sn"], event=f'Attempting to find SNMP in config..')
         snmp_config = device.rpc.get_config(filter_xml='snmp/contact')
         found_snmp_value = etree.tostring(snmp_config, encoding='unicode')
         parsed_snmp_value = xmltodict.parse(found_snmp_value)
         #pprint(parsed_snmp_value['configuration']['snmp']['contact'])
         #config = device.rpc.get_config(filter_xml='snmp', options={'format':'json'})
-        logger.info(f'{new_log_event(device_sn=basic_facts["device_sn"])}{parsed_snmp_value["configuration"]["snmp"]["contact"]}')
+        new_log_event(sio=sio, device_sn=basic_facts["device_sn"], event=f'{parsed_snmp_value["configuration"]["snmp"]["contact"]}')
         basic_facts['cid'] = parsed_snmp_value['configuration']['snmp']['contact']
-        logger.info(f'{new_log_event(device_sn=basic_facts["device_sn"])}CID saved to redis db')
+        new_log_event(sio=sio, device_sn=basic_facts["device_sn"], event=f'CID saved to redis db')
 
     except Exception as e:
-        logger.info(f'{new_log_event(device_sn=basic_facts["device_sn"])}No CID found in the device config')
-        logger.info(f'{new_log_event(device_sn=basic_facts["device_sn"])}Error seen: {e}')
+        new_log_event(sio=sio, device_sn=basic_facts["device_sn"], event=f'No CID found in the device config')
+        new_log_event(sio=sio, device_sn=basic_facts["device_sn"], event=f'{str(e)}')
         # Index error is for if the SNMP contact is not defined in the config.
         try:
             '''
@@ -373,15 +385,15 @@ def gather_basic_facts(device, r):
             # If it's found, let's make that the new cid value.
             if ztp:
                 basic_facts['cid'] = str(ztp)
-                logger.info(f'{new_log_event(device_sn=basic_facts["device_sn"])}found ZTP flag!')
-                logger.info(f'{new_log_event(device_sn=basic_facts["device_sn"])}setting CID value to {str(ztp)}')
+                new_log_event(sio=sio, device_sn=basic_facts["device_sn"], event=f'found ZTP flag!')
+                new_log_event(sio=sio, device_sn=basic_facts["device_sn"], event=f'setting CID value to {str(ztp)}')
             else:
                 # Shouldn't be used, but just in case.
-                logger.info(f'{new_log_event(device_sn=basic_facts["device_sn"])}No ZTP flag set in redis')
+                new_log_event(sio=sio, device_sn=basic_facts["device_sn"], event=f'No ZTP flag set in redis')
                 basic_facts['cid'] = 'none'
         except KeyError:
             # ztp isn't a valid key, so no ztp.
-            logger.info(f'{new_log_event(device_sn=basic_facts["device_sn"])}Exception..setting CID to none.')
+            new_log_event(sio=sio, device_sn=basic_facts["device_sn"], event=f'Exception..setting CID to none.')
             basic_facts['cid'] = 'none'
 
     # -------------------------------------------------------------------------------
@@ -423,13 +435,13 @@ def gather_basic_facts(device, r):
     return basic_facts
 
 
-def update_firmware(device, software_location, srx_firmware_url, r, facts):
-    logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Starting software update...')
+def update_firmware(device, software_location, srx_firmware_url, r, facts, sio):
+    new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Starting software update...')
     r.hmset(facts['device_sn'], {'firmware_update': 'Starting software update...'})
 
     def update_progress(device, report):
         # log the progress of the installing process
-        logger.info(f'{new_log_event(device_sn=facts["device_sn"])}{report}')
+        new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'{report}')
         r.hmset(facts['device_sn'], {'firmware_update': f'{report}'})
 
     package = f'{software_location}{srx_firmware_url}'
@@ -437,25 +449,25 @@ def update_firmware(device, software_location, srx_firmware_url, r, facts):
     validate = True
 
     # Create an instance of SW
-    logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Create an instance of SW')
+    new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Creating an instance of SW')
     device.bind(sw=SW)
 
     try:
-        logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Running installer...')
+        new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Running installer...')
         r.expire(facts['device_sn'], 2400)
         r.hmset(facts['device_sn'], {'firmware_update': 'Running installer...'})
         ok = device.sw.install(package=package, remote_path=remote_path,
                         progress=update_progress, validate=validate, timeout=2400, checksum_timeout=400)
     except Exception as err:
         msg = f'Unable to install software, {err}'
-        logger.error(f'{new_log_event(device_sn=facts["device_sn"])}{msg}')
+        new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'{msg}')
         ok = False
 
     if ok is True:
-        logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Software installation complete. Rebooting')
+        new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Software installation complete. Rebooting')
         rsp = device.sw.reboot(all_re=False)
-        logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Upgrade pending reboot cycle, please be patient.')
-        logger.info(f'{new_log_event(device_sn=facts["device_sn"])}{rsp}')
+        new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Upgrade pending reboot cycle, please be patient.')
+        new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'{rsp}')
 
     return
 
@@ -467,7 +479,7 @@ class OutboundSSHServer(object):
     DEFAULT_LISTEN_BACKLOG = 10
     logger = logger
 
-    def __init__(self, ipaddr, port, login_user, login_password, redis_url, repo_uri, repo_auth_token, software_location, srx_firmware, on_device=None, on_error=None, unittest=None):
+    def __init__(self, ipaddr, port, login_user, login_password, configpy_url, redis_url, repo_uri, repo_auth_token, software_location, srx_firmware, on_device=None, on_error=None, unittest=None):
         """
         Parameters
         ----------
@@ -504,10 +516,13 @@ class OutboundSSHServer(object):
             >>>     print("GOT ERROR: ", str(exc))
         """
 
+
+
         self.thread = None
         self.socket = None
         self.login_user = login_user
         self.login_password = login_password
+        self.configpy_url = configpy_url
         self.redis_url = redis_url
         self.repo_uri = repo_uri
         self.software_location = software_location
@@ -523,6 +538,9 @@ class OutboundSSHServer(object):
         self.on_error = on_error        # callable also provided at :meth:`start`
 
         self.r = redis.Redis(host=redis_url, port=6379, db=0)
+
+        self.sio = socketio.Client()
+        self.sio.connect('http://10.0.0.204:80')
 
 
     # ----------------------------------------------------------------------------------------------------------------
@@ -583,7 +601,7 @@ class OutboundSSHServer(object):
             self._setup_server_socket()
 
         except Exception as exc:
-            logger.error(f'{new_log_event()}{self.name}: failed to setup socket: %s' % str(exc))
+            new_log_event(event=f'{self.name}: failed to setup socket: {str(exc)}')
             return
 
         while True:
@@ -597,12 +615,12 @@ class OutboundSSHServer(object):
 
             except ConnectionAbortedError:
                 # this triggers when the server socket is closed by the shutdown() method
-                logger.info(f'{new_log_event()}{self.name} shutting down')
+                new_log_event(event=f'{self.name} shutting down')
                 return
 
             in_str = f'{in_addr}:{in_port}'
             dev_name = f'device-{in_str}'
-            logger.info(f'{new_log_event()}{self.name}: accepted connection from {in_str}')
+            new_log_event(event=f'{self.name}: accepted connection from {in_str}')
 
             # spawn a device-specific thread for further processing
 
@@ -611,12 +629,12 @@ class OutboundSSHServer(object):
                        kwargs=dict(in_sock=in_sock, in_addr=in_addr, in_port=in_port)).start()
 
             except RuntimeError as exc:
-                logger.err(f'{new_log_event()}{self.name}: ERROR: failed to start processing {in_addr}: %s' % str(exc))
+                new_log_event(event=f'{self.name}: ERROR: failed to start processing {in_addr}: {str(exc)}')
                 in_sock.close()
                 continue
 
         # NOT REACHABLE
-        logger.critical(f'{new_log_event()}Unreachable code reached')
+        new_log_event(sio=sio, event=f'Unreachable code reached')
 
     def _device_thread(self, in_sock, in_addr, in_port):
         """
@@ -645,17 +663,17 @@ class OutboundSSHServer(object):
         # information retrieved
 
         try:
-            logger.info(f'{new_log_event()}establishing netconf to device via: {via_str}')
+            new_log_event(sio=self.sio, event=f'establishing netconf to device via: {via_str}')
             dev = Device(sock_fd=sock_fd, user=self.login_user, password=self.login_password)
             dev.open()
 
         except ConnectError as exc:
-            logger.error(f'{new_log_event()}Connection error to device via {via_str}: {exc.msg}')
+            new_log_event(sio=self.sio, event=f'Connection error to device via {via_str}: {exc.msg}')
             in_sock.close()
             return
 
         except Exception as exc:
-            logger.error(f'{new_log_event()}unable to establish netconf to device via {via_str}: {str(exc)}')
+            new_log_event(sio=self.sio, event=f'unable to establish netconf to device via {via_str}: {str(exc)}')
             in_sock.close()
 
         ########################################
@@ -668,60 +686,60 @@ class OutboundSSHServer(object):
             # Gather Device Facts
             ########################################
 
-            logger.info(f'{new_log_event()}Gathering basic facts from device via: {via_str}')
-            facts = gather_basic_facts(dev, self.r)
-            #logger.info(f'{new_log_event(device_sn=facts["device_sn"])}{json.dumps(facts, indent=3)}')
+            new_log_event(sio=self.sio, event=f'Gathering basic facts from device via: {via_str}')
+
+            facts = gather_basic_facts(dev, self.r, self.sio)
+
+            new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'Finished gathering facts.')
 
             try:
                 facts = convert(facts)
                 self.r.hmset(facts['device_sn'], facts)
                 self.r.hmset(facts['device_sn'], {'Last seen': get_time()})
                 self.r.expire(facts['device_sn'], 300)
-                logger.info(f'{new_log_event(device_sn=facts["device_sn"])}database for {facts["device_sn"]} will expire in 5 min.')
+                new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'database for {facts["device_sn"]} will expire in 5 min.')
             except Exception as e:
-                logger.info(e)
+                new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'{str(e)}')
 
             ########################################
             # Firmware Check / Update
             ########################################
 
-            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}***** TASK : Starting firmware audit...')
-
+            new_log_event(sio=self.sio, device_sn=facts["device_sn"], event='***** TASK : Starting firmware audit...', configpy_url=self.configpy_url)
 
             # Check is SRX 300, 320, 340, or 345:
             if 'SRX3' in facts['device_model']:
-                logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Device type: SRX')
-                logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Device firmware: {facts["os_version"]}')
+                new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'Device type: SRX')
+                new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'Device firmware: {facts["os_version"]}')
 
                 # Check for a firmware mismatch:
                 if facts['os_version'] not in self.srx_firmware and '.tgz' in self.srx_firmware:
-                    logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Desired firmware: {self.srx_firmware}')
-                    logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Firmware mismatch detected!')
+                    new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'Desired firmware: {self.srx_firmware}')
+                    new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'Firmware mismatch detected')
 
                     # Start firmware upgrade if device is not in an SRX cluster.
                     if facts['srx_cluster'] == 'False':
-                        logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Device is not in a cluster.')
+                        new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'Device is not in a cluster.')
                         self.r.hmset(facts['device_sn'], {'config': 'updating firmware'})
                         self.r.expire(facts['device_sn'], 900)
-                        logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Setting device DB timeout for 15 min while update is performed.')
-                        update_firmware(dev, self.software_location, self.srx_firmware, self.r, facts)
+                        new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'Setting device DB timeout for 15 min while update is performed.')
+                        update_firmware(dev, self.software_location, self.srx_firmware, self.r, facts, self.sio)
 
                     # If else, the device is clustered. PyEZ does not support upgrades of clusters yet. (needs testing)
                     else:
-                        logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Device is clustered. Audit abort.')
+                        new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'Device is clustered. Audit abort.')
 
                 elif facts['os_version'] in self.srx_firmware and '.tgz' in self.srx_firmware:
-                    logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Desired firmware: {self.srx_firmware}')
-                    logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Firmware is compliant.')
+                    new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'Desired firmware: {self.srx_firmware}')
+                    new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'Firmware is compliant.')
 
-
-            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}***** TASK : Firmware audit complete.')
+            new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'***** TASK : Firmware audit complete.')
 
             ########################################
             # Configure Clustering
             ########################################
 
-            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}***** TASK : Starting ZTP cluster audit')
+            new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'***** TASK : Starting ZTP cluster audit')
             device = self.r.hgetall(facts["device_sn"])
 
             device_values = {}
@@ -731,46 +749,46 @@ class OutboundSSHServer(object):
             #pprint(device_values)
 
             if 'ztp_cluster_node' in device_values:
-                logger.info(f'{new_log_event(device_sn=facts["device_sn"])}ZTP cluster flag set!')
-                update_config(dev, facts, self.r, self.repo_uri, self.repo_auth_token, ztp_cluster_node=device_values['ztp_cluster_node'])
-                logger.info(f'{new_log_event(device_sn=facts["device_sn"])}***** TASK : ZTP Cluster audit complete')
+                new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'ZTP cluster flag set!')
+                update_config(dev, facts, self.r, self.repo_uri, self.repo_auth_token, sio=self.sio, ztp_cluster_node=device_values['ztp_cluster_node'])
+                new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'***** TASK : ZTP Cluster audit complete')
 
                 try:
                     self.r.hdel(facts['device_sn'], 'ztp_cluster_node')
-                    logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Successfully removed "ztp_cluster_node"')
+                    new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'Successfully removed "ztp_cluster_node"')
                 except Exception as e:
-                    logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Failed to remove "ztp_cluster_node" key.')
+                    new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'Failed to remove "ztp_cluster_node" key.')
 
                 dev.close()
                 self.r.hmset(facts['device_sn'], {'config': 'clustering'})
-                logger.info(f'{new_log_event(device_sn=facts["device_sn"])}***** TASK : Disconnecting - Device needs to reboot.')
+                new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'***** TASK : Disconnecting - Device needs to reboot.')
 
                 return
 
             else:
-                logger.info(f'{new_log_event(device_sn=facts["device_sn"])}ZTP Cluster flag not set.')
+                new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'ZTP Cluster flag not set.')
 
-            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}***** TASK : ZTP Cluster audit complete')
+            new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'***** TASK : ZTP Cluster audit complete')
 
             ########################################
             # Config Check / Update
             ########################################
 
-            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}***** TASK : Starting config audit...')
-            update_config(dev, facts, self.r, self.repo_uri, self.repo_auth_token)
-            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}***** TASK : Config audit complete')
+            new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'***** TASK : Starting config audit...')
+            update_config(dev, facts, self.r, self.repo_uri, self.repo_auth_token, sio=self.sio)
+            new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'***** TASK : Config audit complete')
 
             # call user on-device callback
             # self.on_device(dev, facts)
 
-            logger.info(f'{new_log_event(device_sn=facts["device_sn"])}Completed device with management IP address: {facts["mgmt_ipaddr"]}')
+            new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'Completed device with management IP address: {facts["mgmt_ipaddr"]}')
 
             dev.close()
-            logger.info('- ' * 30)
+            new_log_event(sio=self.sio, event=f'{"- " * 30}')
 
         except Exception as exc:
             error = f"ERROR: unable to process device {in_addr}:{in_port}: %s" % str(exc)
-            logger.error(error)
+            new_log_event(sio=self.sio, event=f'{error}')
             sys.exit(1)
             if self.on_error:
                 self.on_error(dev, exc)
@@ -824,7 +842,7 @@ class OutboundSSHServer(object):
 
         if self.socket:
             msg = f'{self.name} already running'
-            logger.error(msg)
+            new_log_event(event=f'{msg}')
             return False, msg
 
         if on_device:
@@ -833,7 +851,7 @@ class OutboundSSHServer(object):
         if on_error:
             self.on_error = on_error
 
-        logger.info(f'{self.name}: starting on {self.bind_ipaddr}:{self.bind_port}')
+        new_log_event(event=f'{self.name}: starting on {self.bind_ipaddr}:{self.bind_port}')
 
         try:
             self.thread = Thread(name=self.name, target=self._server_thread)
@@ -841,11 +859,11 @@ class OutboundSSHServer(object):
 
         except Exception as exc:
             msg = f'{self.name} unable to start: %s' % str(exc)
-            logger.error(msg)
+            new_log_event(event=f'{msg}')
             return False, msg
 
         msg = f'{self.name}: started'
-        logger.info(msg)
+        new_log_event(event=f'{msg}')
         return True, msg
 
     def stop(self):
@@ -859,4 +877,4 @@ class OutboundSSHServer(object):
         self.socket.close()
         self.thread = None
         self.socket = None
-        logger.info(f'{self.name}: stopped')
+        new_log_event(event=f'{self.name}: stopped')
