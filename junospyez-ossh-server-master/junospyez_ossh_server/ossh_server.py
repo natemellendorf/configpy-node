@@ -539,7 +539,7 @@ class OutboundSSHServer(object):
         self.r = redis.Redis(host=redis_url, port=6379, db=0)
 
         self.sio = socketio.Client()
-        self.sio.connect('http://10.0.0.204:80')
+        self.sio.connect(configpy_url)
 
 
     # ----------------------------------------------------------------------------------------------------------------
