@@ -97,19 +97,11 @@ def repo_sync(redis, facts, **kwargs):
         if x['path_with_namespace'] in kwargs["repo_uri"]:
             raw_config_file = f'{findall}/{x["id"]}/repository/files/{kwargs["cid"]}%2F{kwargs["device_sn"]}%2Eset/raw?ref=master'
 
-            if kwargs['ztp_cluster_node']:
-                new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'clustering config override engaged! {kwargs["ztp_cluster_node"]}')
-                raw_config_file = f'{findall}/{x["id"]}/repository/files/cluster_node{kwargs["ztp_cluster_node"]}%2Eset/raw?ref=master'
-
             try:
                 new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Grabbing config file from repo...')
                 returned = requests.get(raw_config_file, headers=headers, timeout=5)
 
-                if returned.status_code == 200 and kwargs['ztp_cluster_node']:
-                    new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Clustering config acquired.')
-                    return returned
-
-                elif returned.status_code == 200:
+                if returned.status_code == 200:
                     new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Device config acquired.')
                     url_list = ['edit', 'blob']
                     for item in url_list:
@@ -127,13 +119,27 @@ def repo_sync(redis, facts, **kwargs):
                 return
 
 
-def update_config(device, facts, r, repo_uri, repo_auth_token, sio=None, ztp_cluster_node=None):
+def cluster_srx(**kwargs):
+    if kwargs['dev'] and kwargs['sio'] and kwargs['facts'] and kwargs['ztp_cluster_node']:
+        dev = kwargs['dev']
+        sio = kwargs['sio']
+        facts = kwargs['facts']
+        ztp_cluster_node = kwargs['ztp_cluster_node']
+
+        try:
+            dev.rpc.set_chassis_cluster_enable(cluster_id='100', node=ztp_cluster_node, reboot=True)
+            new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Device assigned node id: {ztp_cluster_node}')
+
+        except Exception as e:
+            new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Error: {str(e)}')
+
+
+def update_config(device, facts, r, repo_uri, repo_auth_token, sio=None):
 
     # Attempt to find the config file for the connected device
     new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Searching {repo_uri} in directory {facts["cid"]} for {facts["device_sn"]}.set')
 
-    conf_file = repo_sync(r, facts, repo_uri=repo_uri, cid=facts['cid'], device_sn=facts['device_sn'], ztp_cluster_node=ztp_cluster_node,
-                       repo_auth_token=repo_auth_token, sio=sio)
+    conf_file = repo_sync(r, facts, repo_uri=repo_uri, cid=facts['cid'], device_sn=facts['device_sn'], repo_auth_token=repo_auth_token, sio=sio)
 
     # If found, save the file so it can be loaded by PyEz.
     config_file_location = f'configs/{facts["device_sn"]}.set'
@@ -434,6 +440,31 @@ def gather_basic_facts(device, r, sio):
     return basic_facts
 
 
+def check_backup_firmware(device, facts, sio):
+
+    new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Setting connection timeout to 300 seconds.')
+    device.timeout = 300
+
+    new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Gathering snapshot details.')
+    result = device.rpc.get_snapshot_information(slice='alternate', media='internal')
+    result = etree.tostring(result, encoding='unicode')
+    parsed_snmp_value = xmltodict.parse(result)
+
+    sw_version = []
+
+    for x in parsed_snmp_value['snapshot-information']['software-version']:
+        if x['package']['package-name'] == 'junos':
+            sw_version.append(x['package']['package-version'])
+
+    new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Found: {sw_version}')
+
+    if len(sw_version) == 2 and sw_version[0] != sw_version[1]:
+        new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Mismatch detected!')
+        new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Updating backup firmware...')
+        result = device.rpc.request_snapshot(slice='alternate')
+        new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Result: {result}')
+
+
 def update_firmware(device, software_location, srx_firmware_url, r, facts, sio):
     new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Starting software update...')
     r.hmset(facts['device_sn'], {'firmware_update': 'Starting software update...'})
@@ -455,15 +486,18 @@ def update_firmware(device, software_location, srx_firmware_url, r, facts, sio):
         new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Running installer...')
         r.expire(facts['device_sn'], 2400)
         r.hmset(facts['device_sn'], {'firmware_update': 'Running installer...'})
-        ok = device.sw.install(package=package, remote_path=remote_path,
+        status = device.sw.install(package=package, remote_path=remote_path,
                         progress=update_progress, validate=validate, timeout=2400, checksum_timeout=400)
+
     except Exception as err:
         msg = f'Unable to install software, {err}'
         new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'{msg}')
-        ok = False
+        status = False
 
-    if ok is True:
-        new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Software installation complete. Rebooting')
+        return
+
+    if status is True:
+        new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Software installation complete.')
         rsp = device.sw.reboot(all_re=False)
         new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Upgrade pending reboot cycle, please be patient.')
         new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'{rsp}')
@@ -633,7 +667,6 @@ class OutboundSSHServer(object):
                 continue
 
         # NOT REACHABLE
-        new_log_event(sio=sio, event=f'Unreachable code reached')
 
     def _device_thread(self, in_sock, in_addr, in_port):
         """
@@ -675,20 +708,18 @@ class OutboundSSHServer(object):
             new_log_event(sio=self.sio, event=f'unable to establish netconf to device via {via_str}: {str(exc)}')
             in_sock.close()
 
-        ########################################
+        # #######################################
         # Begin Working With Device
-        ########################################
+        # #######################################
 
         try:
 
-            ########################################
+            # #######################################
             # Gather Device Facts
-            ########################################
+            # #######################################
 
             new_log_event(sio=self.sio, event=f'Gathering basic facts from device via: {via_str}')
-
             facts = gather_basic_facts(dev, self.r, self.sio)
-
             new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'Finished gathering facts.')
 
             try:
@@ -700,9 +731,9 @@ class OutboundSSHServer(object):
             except Exception as e:
                 new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'{str(e)}')
 
-            ########################################
+            # #######################################
             # Firmware Check / Update
-            ########################################
+            # #######################################
 
             new_log_event(sio=self.sio, device_sn=facts["device_sn"], event='***** TASK : Starting firmware audit...', configpy_url=self.configpy_url)
 
@@ -721,8 +752,13 @@ class OutboundSSHServer(object):
                         new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'Device is not in a cluster.')
                         self.r.hmset(facts['device_sn'], {'config': 'updating firmware'})
                         self.r.expire(facts['device_sn'], 900)
-                        new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'Setting device DB timeout for 15 min while update is performed.')
+                        new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'Set device DB timeout for 15 min while update is performed.')
+
                         update_firmware(dev, self.software_location, self.srx_firmware, self.r, facts, self.sio)
+
+                        dev.close()
+                        new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'***** TASK : Disconnecting - Device needs to reboot.')
+                        return
 
                     # If else, the device is clustered. PyEZ does not support upgrades of clusters yet. (needs testing)
                     else:
@@ -734,22 +770,36 @@ class OutboundSSHServer(object):
 
             new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'***** TASK : Firmware audit complete.')
 
-            ########################################
+            # #######################################
+            # Backup Firmware Check / Update
+            # #######################################
+
+            new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'***** TASK : Starting Backup Firmware audit...')
+
+            try:
+                check_backup_firmware(dev, facts, self.sio)
+                new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'Successfully updated backup firmware.')
+            except Exception as e:
+                new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'Error: {str(e)}')
+
+            new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'***** TASK : Backup Firmware audit complete.')
+
+            # #######################################
             # Configure Clustering
-            ########################################
+            # #######################################
 
             new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'***** TASK : Starting ZTP cluster audit')
-            device = self.r.hgetall(facts["device_sn"])
+            device_db = self.r.hgetall(facts["device_sn"])
 
             device_values = {}
-            for x, y in device.items():
+            for x, y in device_db.items():
                 device_values[x.decode("utf-8")] = y.decode("utf-8")
-
-            #pprint(device_values)
 
             if 'ztp_cluster_node' in device_values:
                 new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'ZTP cluster flag set!')
-                update_config(dev, facts, self.r, self.repo_uri, self.repo_auth_token, sio=self.sio, ztp_cluster_node=device_values['ztp_cluster_node'])
+
+                cluster_srx(dev=dev, sio=self.sio, facts=facts, ztp_cluster_node=device_values['ztp_cluster_node'])
+
                 new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'***** TASK : ZTP Cluster audit complete')
 
                 try:
@@ -769,9 +819,9 @@ class OutboundSSHServer(object):
 
             new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'***** TASK : ZTP Cluster audit complete')
 
-            ########################################
+            # #######################################
             # Config Check / Update
-            ########################################
+            # #######################################
 
             new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'***** TASK : Starting config audit...')
             update_config(dev, facts, self.r, self.repo_uri, self.repo_auth_token, sio=self.sio)
