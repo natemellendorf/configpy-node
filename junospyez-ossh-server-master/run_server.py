@@ -16,7 +16,8 @@ def start(args):
                                    repo_uri=args.repo_uri,
                                    repo_auth_token=args.repo_auth_token,
                                    software_location=args.software_location,
-                                   srx_firmware=args.srx_firmware
+                                   srx_firmware=args.srx_firmware,
+                                   srx_firmware_checksum=args.srx_firmware_checksum
                                    )
 
         # Enable logging to console
@@ -37,14 +38,15 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='configpy-node')
     parser.add_argument('-ip', default='0.0.0.0',  help='IP address to listen on.', required=False)
     parser.add_argument('-port', default='9000', help='TCP port to listen on.', required=False)
-    parser.add_argument('-user', help='Username used to login to Junos devices', required=True)
+    parser.add_argument('-user', help='Username used to login to Junos devices.', required=True)
     parser.add_argument('-password', help='Password used ot login to Junos devices.', required=True)
-    parser.add_argument('-configpy_url', help='Full URL to configpy WebUI', required=True)
+    parser.add_argument('-configpy_url', help='Full URL to configpy WebUI.', required=True)
     parser.add_argument('-redis_url', help='FQDN of your IP of Redis DB/container.', required=True)
     parser.add_argument('-repo_uri', help='URI to your GitLab repository which houses your configs.', required=True)
     parser.add_argument('-repo_auth_token', help='Authentication token to access your GitLab API.', required=True)
     parser.add_argument('-software_location', help='URL or IP to a folder which houses your Junos firmware.', required=True)
-    parser.add_argument('-srx_firmware', help='Exact name of the firmware file stored on the -software_location for the SRX300 series', required=True)
+    parser.add_argument('-srx_firmware', help='Exact name of the firmware file stored on the -software_location for the SRX300 series.', required=True)
+    parser.add_argument('-srx_firmware_checksum', help='MD5 checksum for srx_firmware.', required=True)
 
     # Parse the arguments provided, and store them in the args var.
     args = parser.parse_args()

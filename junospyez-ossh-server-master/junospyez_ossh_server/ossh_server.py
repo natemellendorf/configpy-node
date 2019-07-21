@@ -464,6 +464,75 @@ def check_backup_firmware(device, facts, sio):
         result = device.rpc.request_snapshot(slice='alternate')
         new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Result: {result}')
 
+def xml_to_dict(var):
+    result = etree.tostring(var, encoding='unicode')
+    final_dict = xmltodict.parse(result)
+    return final_dict
+
+def find_checksum(dev, destination=None):
+    result = dev.rpc.get_checksum_information(path=f'{destination}')
+    parsed_checksum_value = xml_to_dict(result)
+    found_checksum = parsed_checksum_value['checksum-information']['file-checksum'].get('checksum', None)
+    return found_checksum
+
+def upload_file(dev, sio, facts, source=None, destination=None, srx_firmware_checksum=None, **kwargs):
+    found_checksum = None
+    if source and destination:
+        # Check to see if file exists on the device.
+        try:
+            result = dev.rpc.file_list(path=f'{destination}')
+            result = xml_to_dict(result)
+            if result['directory-list']['directory']['file-information']['file-name'] == destination:
+                new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'File exists. Checking file checksum...')
+                found_checksum = find_checksum(dev, destination)
+                if found_checksum and found_checksum == srx_firmware_checksum:
+                    new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Checksum matched!')
+                    return 0
+                else:
+                    new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Existing file checksum does not match.')
+        except Exception as e:
+            pass
+
+        new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Uploading file... Please be patient...')
+        dev.rpc.file_copy(source=f'{source}', destination=f'{destination}')
+        found_checksum = find_checksum(dev, destination)
+        if found_checksum and found_checksum == srx_firmware_checksum:
+            new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Upload complete. Checksum matched!')
+            return 0
+        new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'ERROR: Upload complete, but checksum does not match!')
+        return 1
+    else:
+        new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'ERROR: Upload failed. Invalid source or destination.')
+        return 1
+
+
+def update_cluster(dev, software_location, srx_firmware, r, facts, sio, srx_firmware_checksum):
+    # Set default values for function.
+    dev.timeout = 600
+    result = 1
+
+    new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Searching for firmware and uploading if needed.')
+    result = upload_file(dev, sio, facts, source=f'{software_location}{srx_firmware}', destination=f'/var/tmp/{srx_firmware}', srx_firmware_checksum=srx_firmware_checksum)
+
+    # If checksum was found and it matched the provided checksum, then perform ISSU.
+    if result == 0:
+        # FIXME: I would like to use the below, but it doesn't return any useful results...
+        # result = dev.rpc.request_package_in_service_upgrade(package_name=f'/var/tmp/{srx_firmware}', no_sync=True)
+        result = dev.cli(f'request system software in-service-upgrade {srx_firmware} no-sync')
+
+        if 'ISSU not allowed' in result:
+            new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'ERROR: {result}')
+            return 1
+
+        else:
+            return 0
+
+    # If any of the above is invalid, send an error syslog.
+    elif result == 1:
+        new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'ERROR: Unable to upload file to device.')
+        new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'ERROR: Aborting upgrade.')
+        return 1
+
 
 def update_firmware(device, software_location, srx_firmware_url, r, facts, sio):
     new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Starting software update...')
@@ -486,8 +555,7 @@ def update_firmware(device, software_location, srx_firmware_url, r, facts, sio):
         new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Running installer...')
         r.expire(facts['device_sn'], 2400)
         r.hmset(facts['device_sn'], {'firmware_update': 'Running installer...'})
-        status = device.sw.install(package=package, remote_path=remote_path,
-                        progress=update_progress, validate=validate, timeout=2400, checksum_timeout=400)
+        status = device.sw.install(package=package, remote_path=remote_path, progress=update_progress, validate=validate, timeout=2400, checksum_timeout=400)
 
     except Exception as err:
         msg = f'Unable to install software, {err}'
@@ -512,7 +580,7 @@ class OutboundSSHServer(object):
     DEFAULT_LISTEN_BACKLOG = 10
     logger = logger
 
-    def __init__(self, ipaddr, port, login_user, login_password, configpy_url, redis_url, repo_uri, repo_auth_token, software_location, srx_firmware, on_device=None, on_error=None, unittest=None):
+    def __init__(self, ipaddr, port, login_user, login_password, configpy_url, redis_url, repo_uri, repo_auth_token, software_location, srx_firmware, srx_firmware_checksum, on_device=None, on_error=None, unittest=None):
         """
         Parameters
         ----------
@@ -560,6 +628,7 @@ class OutboundSSHServer(object):
         self.repo_uri = repo_uri
         self.software_location = software_location
         self.srx_firmware = srx_firmware
+        self.srx_firmware_checksum = srx_firmware_checksum
         self.repo_auth_token = repo_auth_token
         self.bind_ipaddr = ipaddr
         self.bind_port = int(port)
@@ -760,9 +829,26 @@ class OutboundSSHServer(object):
                         new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'***** TASK : Disconnecting - Device needs to reboot.')
                         return
 
-                    # If else, the device is clustered. PyEZ does not support upgrades of clusters yet. (needs testing)
+                    elif facts['srx_cluster'] == 'True':
+                        # Attempt to perform ISSU on the SRX cluster
+                        new_log_event(sio=self.sio, device_sn=facts["device_sn"], event='Starting Cluster firmware audit...', configpy_url=self.configpy_url)
+
+                        try:
+                            status = update_cluster(dev, self.software_location, self.srx_firmware, self.r, facts, self.sio, self.srx_firmware_checksum)
+                        except Exception as e:
+                            new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'ERROR: {str(e)}')
+                            return
+
+                        if status == 0:
+                            new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'Disconnecting device.')
+                            dev.close()
+                        elif status == 1:
+                            new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'ERROR: ISSU firmware upgrade failed.')
+
                     else:
-                        new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'Device is clustered. Audit abort.')
+                        # This code should not be reached..
+                        new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'ERROR: unreachable code reached!')
+                        pass
 
                 elif facts['os_version'] in self.srx_firmware and '.tgz' in self.srx_firmware:
                     new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'Desired firmware: {self.srx_firmware}')
@@ -778,7 +864,6 @@ class OutboundSSHServer(object):
 
             try:
                 check_backup_firmware(dev, facts, self.sio)
-                new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'Successfully updated backup firmware.')
             except Exception as e:
                 new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'Error: {str(e)}')
 
