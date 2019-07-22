@@ -440,7 +440,7 @@ def gather_basic_facts(device, r, sio):
     return basic_facts
 
 
-def check_backup_firmware(device, facts, sio):
+def check_backup_firmware(device, facts, sio, r):
 
     new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Setting connection timeout to 300 seconds.')
     device.timeout = 300
@@ -461,6 +461,7 @@ def check_backup_firmware(device, facts, sio):
     if len(sw_version) == 2 and sw_version[0] != sw_version[1]:
         new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Mismatch detected!')
         new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Updating backup firmware...')
+        r.hmset(facts['device_sn'], {'config': f'updating snapshot'})
         result = device.rpc.request_snapshot(slice='alternate')
         new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Result: {result}')
 
@@ -507,8 +508,9 @@ def upload_file(dev, sio, facts, source=None, destination=None, srx_firmware_che
 
 
 def update_cluster(dev, software_location, srx_firmware, r, facts, sio, srx_firmware_checksum):
-    # Set default values for function.
-    dev.timeout = 600
+    # Upgrades can take a while. Increasing timeout to 15 minutes.
+    dev.timeout = 900
+    # Default result to 1. It must become 0 for the upgrade to proceed.
     result = 1
 
     new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Searching for firmware and uploading if needed.')
@@ -518,6 +520,7 @@ def update_cluster(dev, software_location, srx_firmware, r, facts, sio, srx_firm
     if result == 0:
         # FIXME: I would like to use the below, but it doesn't return any useful results...
         # result = dev.rpc.request_package_in_service_upgrade(package_name=f'/var/tmp/{srx_firmware}', no_sync=True)
+        r.hmset(facts['device_sn'], {'config': f'running ISSU'})
         result = dev.cli(f'request system software in-service-upgrade {srx_firmware} no-sync')
 
         if 'ISSU not allowed' in result:
@@ -529,7 +532,6 @@ def update_cluster(dev, software_location, srx_firmware, r, facts, sio, srx_firm
 
     # If any of the above is invalid, send an error syslog.
     elif result == 1:
-        new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'ERROR: Unable to upload file to device.')
         new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'ERROR: Aborting upgrade.')
         return 1
 
@@ -567,6 +569,7 @@ def update_firmware(device, software_location, srx_firmware_url, r, facts, sio):
     if status is True:
         new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Software installation complete.')
         rsp = device.sw.reboot(all_re=False)
+        r.hmset(facts['device_sn'], {'firmware_update': 'Rebooting'})
         new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'Upgrade pending reboot cycle, please be patient.')
         new_log_event(sio=sio, device_sn=facts["device_sn"], event=f'{rsp}')
 
@@ -863,7 +866,7 @@ class OutboundSSHServer(object):
             new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'***** TASK : Starting Backup Firmware audit...')
 
             try:
-                check_backup_firmware(dev, facts, self.sio)
+                check_backup_firmware(dev, facts, self.sio, self.r)
             except Exception as e:
                 new_log_event(sio=self.sio, device_sn=facts["device_sn"], event=f'Error: {str(e)}')
 
